@@ -1,0 +1,9 @@
+{
+  "[shellscript]": {
+    "editor.defaultFormatter": "lumirelle.shell-format-rev",
+    "editor.formatOnSave": true
+  },
+  "editor.codeActionsOnSave": {
+    "source.fixAll.shellcheck": "explicit"
+  },
+}
