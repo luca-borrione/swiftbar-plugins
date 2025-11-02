@@ -373,9 +373,6 @@ render_and_update_pagination() {
           sort -n -t $'\t' -k1,1 "$TMP_OUT" | cut -f2-
           : >"$TMP_OUT"
         fi
-        # Insert a separator before this repo header, except before the very first one
-        if ((SEEN_HEADER == 1)); then echo "--"; fi
-        SEEN_HEADER=1
       fi
       # Update the count in the header line
       # Extract repo name from header (format: "REPO: COUNT | href=...")
@@ -388,12 +385,14 @@ render_and_update_pagination() {
         if ! [[ "$corrected_count" =~ ^[0-9]+$ ]]; then
           corrected_count=0
         fi
-        # Only output the header if there are PRs to show
+        # Only output the header (and a preceding separator) if there are PRs to show
         if [ "$corrected_count" -gt 0 ]; then
+          if ((SEEN_HEADER == 1)); then echo "--"; fi
+          SEEN_HEADER=1
           echo "-- $repo_name: $corrected_count |$rest"
         fi
       else
-        echo "-- $line"
+        :
       fi
     fi
   done <"$TMP_FILTERED"

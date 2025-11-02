@@ -76,8 +76,16 @@ export REPO_HEADER_COLOR="#0A3069"       # dark blue for repo headers
 export REPO_HEADER_FONT="Helvetica-Bold" # bold header font (use a font installed on your Mac)
 export REPO_HEADER_SIZE="13"             # header font size
 
-# Recently Merged section configuration
-XTV_RECENTLY_MERGED_DAYS=7 # set to a positive integer to enable "Recently Merged"; unset or 0 to hide
+# Section visibility knobs (1=show, 0=hide)
+SHOW_RAISED_BY_ME_SECTION=1
+SHOW_PARTICIPATED_SECTION=1
+SHOW_ASSIGNED_TO_ME_SECTION=1
+SHOW_RECENTLY_MERGED_SECTION=1
+# SHOW_ASSIGNED_TO_TEAMS_SECTION removed; section visibility now depends on ASSIGNED_TO_TEAMS being non-empty
+# SHOW_RAISED_BY_TEAMS_SECTION removed; section visibility now depends on RAISED_BY_TEAMS being non-empty
+
+# Section configuration
+RECENTLY_MERGED_DAYS=7
 
 # Notification preferences (1=on, 0=off)
 export NOTIFY_NEW_PR=0
@@ -146,19 +154,31 @@ NBCUDTC/peacock-clients-dev-dns
 # ============================================================================
 
 # Parse into array (trim whitespace, drop empty lines) - compatible with older bash
-ASSIGNED_ARR=()
+ASSIGNED_TO_TEAMS_ARRAY=()
 while IFS= read -r line; do
   line=$(printf "%s" "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
   [ -z "$line" ] && continue
-  ASSIGNED_ARR+=("$line")
+  ASSIGNED_TO_TEAMS_ARRAY+=("$line")
 done <<<"$ASSIGNED_TO_TEAMS"
+# Derived visibility flag for clarity
+if [ "${#ASSIGNED_TO_TEAMS_ARRAY[@]}" -gt 0 ]; then
+  SHOW_ASSIGNED_TO_TEAMS_SECTION=1
+else
+  SHOW_ASSIGNED_TO_TEAMS_SECTION=0
+fi
 
-RAISED_ARR=()
+RAISED_BY_TEAMS_ARRAY=()
 while IFS= read -r line; do
   line=$(printf "%s" "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
   [ -z "$line" ] && continue
-  RAISED_ARR+=("$line")
+  RAISED_BY_TEAMS_ARRAY+=("$line")
 done <<<"$RAISED_BY_TEAMS"
+# Derived visibility flag for clarity
+if [ "${#RAISED_BY_TEAMS_ARRAY[@]}" -gt 0 ]; then
+  SHOW_RAISED_BY_TEAMS_SECTION=1
+else
+  SHOW_RAISED_BY_TEAMS_SECTION=0
+fi
 
 # 1.
 # Accumulator for all open PRs across sections (for notifications)
@@ -215,72 +235,93 @@ export SWIFTBAR_PLUGIN_CACHE_PATH
 ASSIGNED_MAX_PAR="${ASSIGNED_TOTALS_CONCURRENCY:-8}"
 if ! [[ "$ASSIGNED_MAX_PAR" =~ ^[1-9][0-9]*$ ]]; then ASSIGNED_MAX_PAR=8; fi
 # Personal sections before team sections
-# 0.a Assigned to Me (review requested to me)
-echo "Assigned to Me" >>"$TMP_MENU"
-TMP_ME_MENU="$(mktemp)"
-fetch_assigned_to_me "$TMP_ME_MENU"
-cat "$TMP_ME_MENU" >>"$TMP_MENU"
-rm -f "$TMP_ME_MENU" 2>/dev/null || true
+# 0.a Raised by Me (my authored PRs)
+if [ "${SHOW_RAISED_BY_ME_SECTION:-0}" = "1" ]; then
+  echo "Raised by Me" >>"$TMP_MENU"
+  TMP_MYPR_MENU="$(mktemp)"
+  fetch_raised_by_me "$TMP_MYPR_MENU"
+  cat "$TMP_MYPR_MENU" >>"$TMP_MENU"
+  rm -f "$TMP_MYPR_MENU" 2>/dev/null || true
+fi
 
-# 0.b Raised by Me (my authored PRs)
-echo "Raised by Me" >>"$TMP_MENU"
-TMP_MYPR_MENU="$(mktemp)"
-fetch_raised_by_me "$TMP_MYPR_MENU"
-cat "$TMP_MYPR_MENU" >>"$TMP_MENU"
-rm -f "$TMP_MYPR_MENU" 2>/dev/null || true
+# 0.b Participated (any involvement on open PRs)
+if [ "${SHOW_PARTICIPATED_SECTION:-0}" = "1" ]; then
+  echo "Participated" >>"$TMP_MENU"
+  TMP_PART_MENU="$(mktemp)"
+  fetch_participated "$TMP_PART_MENU"
+  cat "$TMP_PART_MENU" >>"$TMP_MENU"
+  rm -f "$TMP_PART_MENU" 2>/dev/null || true
+fi
 
-# 0.c Recently Merged (my recently merged PRs)
-DAYS_V="${XTV_RECENTLY_MERGED_DAYS:-}"
-if [[ -z "$DAYS_V" ]] || ! [[ "$DAYS_V" =~ ^[0-9]+$ ]] || ((DAYS_V <= 0)); then
-  : # disabled -> do not add section or fetch
-else
+# 0.c Assigned to Me (review requested to me)
+if [ "${SHOW_ASSIGNED_TO_ME_SECTION:-0}" = "1" ]; then
+  echo "Assigned to Me" >>"$TMP_MENU"
+  TMP_ME_MENU="$(mktemp)"
+  fetch_assigned_to_me "$TMP_ME_MENU"
+  cat "$TMP_ME_MENU" >>"$TMP_MENU"
+  rm -f "$TMP_ME_MENU" 2>/dev/null || true
+fi
+
+# 0.d Recently Merged (my recently merged PRs)
+if [ "${SHOW_RECENTLY_MERGED_SECTION:-0}" = "1" ] &&
+  [[ -n "${RECENTLY_MERGED_DAYS:-}" ]] &&
+  [[ "${RECENTLY_MERGED_DAYS}" =~ ^[0-9]+$ ]] &&
+  ((RECENTLY_MERGED_DAYS > 0)); then
   echo "Recently Merged" >>"$TMP_MENU"
   TMP_MERGED_MENU="$(mktemp)"
-  fetch_recently_merged "$TMP_MERGED_MENU" "$DAYS_V"
+  fetch_recently_merged "$TMP_MERGED_MENU" "$RECENTLY_MERGED_DAYS"
   cat "$TMP_MERGED_MENU" >>"$TMP_MENU"
   rm -f "$TMP_MERGED_MENU" 2>/dev/null || true
 fi
 
-echo "Assigned to" >>"$TMP_MENU"
+# Separator between personal sections and team sections
+if { [ "${SHOW_ASSIGNED_TO_TEAMS_SECTION:-0}" = "1" ]; } || { [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; }; then
+  # Team sections
+  echo "---" >>"$TMP_MENU"
+fi
 
-TP_COUNT=0
+if [ "${SHOW_ASSIGNED_TO_TEAMS_SECTION:-0}" = "1" ]; then
+  echo "Assigned to" >>"$TMP_MENU"
+fi
 
-# Run total counts concurrently across all configured teams
-TOTAL_DIR="$(mktemp -d)"
-TOTAL_PIDS=()
-for team in "${ASSIGNED_ARR[@]}"; do
+if [ "${SHOW_ASSIGNED_TO_TEAMS_SECTION:-0}" = "1" ]; then
+  TP_COUNT=0
+  # Run total counts concurrently across all configured teams
+  TOTAL_DIR="$(mktemp -d)"
+  TOTAL_PIDS=()
+  for team in "${ASSIGNED_TO_TEAMS_ARRAY[@]}"; do
+    REPO_Q=$(build_repo_qualifier)
+    COLLECT_ASSIGNED=1
+    q="is:pr is:open team-review-requested:${team}${REPO_Q}"
+    f="$TOTAL_DIR/${team//\//_}.txt"
+    TP_COUNT=$((TP_COUNT + 1))
+    if [ $((TP_COUNT % ASSIGNED_MAX_PAR)) -eq 0 ]; then
+      for pid in "${TOTAL_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done
+      TOTAL_PIDS=()
+    fi
+    (gh api graphql -f query='query($q:String!){ search(query:$q, type: ISSUE){ issueCount } }' -F q="$q" --jq '.data.search.issueCount' >"$f" 2>/dev/null || echo "0" >"$f") &
+    TOTAL_PIDS+=($!)
+  done
+fi
 
-  REPO_Q=$(build_repo_qualifier)
-
-  COLLECT_ASSIGNED=1
-
-  q="is:pr is:open team-review-requested:${team}${REPO_Q}"
-  f="$TOTAL_DIR/${team//\//_}.txt"
-  TP_COUNT=$((TP_COUNT + 1))
-  if [ $((TP_COUNT % ASSIGNED_MAX_PAR)) -eq 0 ]; then
-    for pid in "${TOTAL_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done
-    TOTAL_PIDS=()
-  fi
-  (gh api graphql -f query='query($q:String!){ search(query:$q, type: ISSUE){ issueCount } }' -F q="$q" --jq '.data.search.issueCount' >"$f" 2>/dev/null || echo "0" >"$f") &
-  TOTAL_PIDS+=($!)
-done
-
-# 2.
-# Show the list of PRs per configured team
-N=50
-for team in "${ASSIGNED_ARR[@]}"; do
-  team_name="${team#*/}"
-  echo "$team_name" >>"$TMP_MENU"
-  TMP_TEAM_MENU="$(mktemp)"
-  fetch_team_prs "$team" "$TMP_TEAM_MENU"
-  cat "$TMP_TEAM_MENU" >>"$TMP_MENU"
-  rm -f "$TMP_TEAM_MENU" 2>/dev/null || true
-done
+if [ "${SHOW_ASSIGNED_TO_TEAMS_SECTION:-0}" = "1" ]; then
+  # 2.
+  # Show the list of PRs per configured team
+  N=50
+  for team in "${ASSIGNED_TO_TEAMS_ARRAY[@]}"; do
+    team_name="${team#*/}"
+    echo "$team_name" >>"$TMP_MENU"
+    TMP_TEAM_MENU="$(mktemp)"
+    fetch_team_prs "$team" "$TMP_TEAM_MENU"
+    cat "$TMP_TEAM_MENU" >>"$TMP_MENU"
+    rm -f "$TMP_TEAM_MENU" 2>/dev/null || true
+  done
+fi
 # Raised by section
-if [ "${#RAISED_ARR[@]}" -gt 0 ]; then
+if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
   echo "---" >>"$TMP_MENU"
   echo "Raised by" >>"$TMP_MENU"
-  for rteam in "${RAISED_ARR[@]}"; do
+  for rteam in "${RAISED_BY_TEAMS_ARRAY[@]}"; do
     r_org="${rteam%%/*}"
     r_name="${rteam#*/}"
     echo "$r_name" >>"$TMP_MENU"
@@ -427,7 +468,7 @@ else
 
     # Build teams JSON array for jq membership check
     ASSIGNED_JSON="["
-    for t in "${ASSIGNED_ARR[@]}"; do ASSIGNED_JSON+="\"$t\","; done
+    for t in "${ASSIGNED_TO_TEAMS_ARRAY[@]}"; do ASSIGNED_JSON+="\"$t\","; done
     ASSIGNED_JSON="${ASSIGNED_JSON%,}]"
 
     # For each current PR assigned to team, fetch latest team ReviewRequestedEvent timestamp

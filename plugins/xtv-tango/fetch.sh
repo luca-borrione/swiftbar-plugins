@@ -52,10 +52,9 @@ build_repo_qualifier() {
 fetch_assigned_to_me() {
   local output_file="$1"
 
-  local query
   local repo_q
-
   repo_q=$(build_repo_qualifier)
+  local query
   query="is:pr is:open review-requested:@me${repo_q}"
 
   # Set flag to filter only individual review requests (not team requests)
@@ -67,9 +66,9 @@ fetch_assigned_to_me() {
 # Fetch "Raised by Me" PRs
 fetch_raised_by_me() {
   local output_file="$1"
+
   local repo_q
   repo_q=$(build_repo_qualifier)
-
   local query
   query="is:pr is:open author:@me${repo_q}"
 
@@ -80,13 +79,27 @@ fetch_raised_by_me() {
 fetch_recently_merged() {
   local output_file="$1"
   local days="$2"
+
   local repo_q
   repo_q=$(build_repo_qualifier)
-
   local query
   query="is:pr is:merged author:@me merged:>=$(date -u -v-"${days}"d +%Y-%m-%d)${repo_q}"
 
   fetch_and_render_prs "$query" "is:pr is:merged author:@me" 0 "$output_file"
+}
+
+# Fetch PRs I participated in (any involvement: comments, reviews, mentions, or reviews incl. dismissed)
+fetch_participated() {
+  local output_file="$1"
+
+  local repo_q
+  repo_q=$(build_repo_qualifier)
+  local q_involves="is:pr is:open involves:@me -author:@me${repo_q}"
+  local q_reviewed="is:pr is:open reviewed-by:@me -author:@me${repo_q}"
+
+  # Run both queries; duplicates will be suppressed by SEEN_PRS_FILE during rendering
+  fetch_and_render_prs "$q_involves" "is:pr is:open involves:@me -author:@me" 0 "$output_file"
+  fetch_and_render_prs "$q_reviewed" "is:pr is:open reviewed-by:@me -author:@me" 0 "$output_file"
 }
 
 # Fetch PRs for a specific team
@@ -94,11 +107,11 @@ fetch_team_prs() {
   local team_slug="$1"
   local output_file="$2"
 
-  local query
   local repo_q
-
   repo_q=$(build_repo_qualifier)
+  local query
   query="is:pr is:open team-review-requested:${team_slug}${repo_q}"
+
   fetch_and_render_prs "$query" "is:pr is:open team-review-requested:${team_slug}" 1 "$output_file"
 }
 
