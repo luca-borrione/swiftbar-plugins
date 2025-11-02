@@ -235,7 +235,7 @@ render_and_update_pagination() {
     | to_entries
     | .[]
     | (if .key > 0 then "__SEP__" else empty end),
-      (.value[0].repo + ": " + ((.value | length) | tostring) + " | href=https://github.com/\(.value[0].repo)/pulls?q=\($hdrLink) color=\($hdr) font=\($hdrFont) size=\($hdrSize)"),
+      (.value[0].repo + ": " + ((.value | length) | tostring) + " | href=https://github.com/\(.value[0].repo)/pulls?q=\($hdrLink|@uri) color=\($hdr) font=\($hdrFont) size=\($hdrSize)"),
       ( ((if $sort == "activity"
            then (.value | sort_by(.updatedAt | fromdateiso8601))
            else (.value | sort_by(.number))
@@ -258,19 +258,9 @@ render_and_update_pagination() {
         continue
       fi
 
-      # Skip if this PR is in the hidden list
-      if [ -n "${HIDDEN_PRS_FILE:-}" ] && [ -f "$HIDDEN_PRS_FILE" ] && grep -q -F -x "$url" "$HIDDEN_PRS_FILE" 2>/dev/null; then
-        continue
-      fi
-
       # Mark this PR as seen
       if [ -n "${SEEN_PRS_FILE:-}" ]; then
         echo "$url" >>"$SEEN_PRS_FILE"
-      fi
-
-      # Track URL for "Remove All" functionality
-      if [ -n "${SECTION_URLS_FILE:-}" ]; then
-        echo "$url" >>"$SECTION_URLS_FILE"
       fi
 
       # Track count for this repo (using a file instead of associative array for Bash 3.2 compatibility)
@@ -350,31 +340,22 @@ render_and_update_pagination() {
           printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$repo" "$number" "$clean_title" "$url" "$conv" "$in_queue" "$assigned_flag" "$clean_comment_id" "$clean_comment_author" "$clean_comment_body" >>"$CURRENT_OPEN_FILE"
         fi
 
-        # Prepare remove command (ensure dir exists; append URL; log for debugging)
-        _remove_cmd="mkdir -p \"$SWIFTBAR_PLUGIN_CACHE_PATH\"; printf \"%s\\n\" \"$url\" >> \"$HIDDEN_PRS_FILE\"; echo \"REMOVE: $url -> $HIDDEN_PRS_FILE\" >> /tmp/xtv-debug.log"
-
         if [[ -n "$b64" ]]; then
           if [ "${marked_rereq:-0}" -eq 1 ]; then
             _click_cmd="grep -v -F -- \"$needle\" \"$REREQ_HITS_FILE\" >\"$REREQ_HITS_FILE.tmp\" || true; mv \"$REREQ_HITS_FILE.tmp\" \"$REREQ_HITS_FILE\" || true; open \"$url\""
-            printf "%s\t-- %s%s | bash=/bin/bash param1=-lc param2=%q terminal=false refresh=true image=%s\n" \
-              "$local_idx" "$label" "$suffix" "$_click_cmd" "$b64"
+            printf "%s\t-- %s%s | bash=/bin/bash param1=-lc param2='%s' terminal=false refresh=true image=%s\n" \
+              "$local_idx" "$label" "$suffix" "$(printf "%s" "$_click_cmd" | sed "s/'/'\\''/g")" "$b64"
           else
             printf "%s\t-- %s%s | href=%s image=%s\n" "$local_idx" "$label" "$suffix" "$url" "$b64"
           fi
-          # Add Remove submenu item
-          printf "%s\t---- Remove | bash=/bin/bash param1=-lc param2=%q terminal=false refresh=true\n" \
-            "$local_idx" "$_remove_cmd"
         else
           if [ "${marked_rereq:-0}" -eq 1 ]; then
             _click_cmd="grep -v -F -- \"$needle\" \"$REREQ_HITS_FILE\" >\"$REREQ_HITS_FILE.tmp\" || true; mv \"$REREQ_HITS_FILE.tmp\" \"$REREQ_HITS_FILE\" || true; open \"$url\""
-            printf "%s\t-- %s%s | bash=/bin/bash param1=-lc param2=%q terminal=false refresh=true sfimage=person.crop.circle\n" \
-              "$local_idx" "$label" "$suffix" "$_click_cmd"
+            printf "%s\t-- %s%s | bash=/bin/bash param1=-lc param2='%s' terminal=false refresh=true sfimage=person.crop.circle\n" \
+              "$local_idx" "$label" "$suffix" "$(printf "%s" "$_click_cmd" | sed "s/'/'\\''/g")"
           else
             printf "%s\t-- %s%s | href=%s sfimage=person.crop.circle\n" "$local_idx" "$label" "$suffix" "$url"
           fi
-          # Add Remove submenu item
-          printf "%s\t---- Remove | bash=/bin/bash param1=-lc param2=%q terminal=false refresh=true\n" \
-            "$local_idx" "$_remove_cmd"
         fi
 
       ) >>"$TMP_OUT" &

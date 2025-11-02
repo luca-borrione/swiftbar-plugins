@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016
+# shellcheck disable=SC2016,SC2034
+
 # ============================================================================
 # PR FETCHING FUNCTIONS
 # ============================================================================
@@ -41,30 +42,25 @@ fetch_and_render_prs() {
 # Build repo allowlist qualifier
 build_repo_qualifier() {
   local repo_q=""
-  if [ "${#WATCHED_ARR[@]}" -gt 0 ]; then
-    for r in "${WATCHED_ARR[@]}"; do
-      repo_q+=" repo:${r}"
-    done
-  fi
+  for r in "${WATCHED_ARR[@]}"; do
+    repo_q+=" repo:${r}"
+  done
   echo "$repo_q"
 }
 
 # Fetch "Assigned to Me" PRs (only individual review requests, not team requests)
 fetch_assigned_to_me() {
   local output_file="$1"
-  local repo_q
-  repo_q=$(build_repo_qualifier)
 
   local query
-  if [ -n "$repo_q" ]; then
-    query="is:pr is:open review-requested:@me${repo_q}"
-  else
-    query="is:pr is:open review-requested:@me"
-  fi
+  local repo_q
+
+  repo_q=$(build_repo_qualifier)
+  query="is:pr is:open review-requested:@me${repo_q}"
 
   # Set flag to filter only individual review requests (not team requests)
   export FILTER_INDIVIDUAL_REVIEWS="true"
-  fetch_and_render_prs "$query" "is%3Apr+is%3Aopen+review-requested%3A%40me" 0 "$output_file"
+  fetch_and_render_prs "$query" "is:pr is:open review-requested:@me" 0 "$output_file"
   export FILTER_INDIVIDUAL_REVIEWS="false"
 }
 
@@ -75,54 +71,35 @@ fetch_raised_by_me() {
   repo_q=$(build_repo_qualifier)
 
   local query
-  if [ -n "$repo_q" ]; then
-    query="is:pr is:open author:@me${repo_q}"
-  else
-    query="is:pr is:open author:@me"
-  fi
+  query="is:pr is:open author:@me${repo_q}"
 
-  fetch_and_render_prs "$query" "is%3Apr+is%3Aopen+author%3A%40me" 0 "$output_file"
+  fetch_and_render_prs "$query" "is:pr is:open author:@me" 0 "$output_file"
 }
 
 # Fetch "Recently Merged" PRs (authored by me, merged in the last N days)
 fetch_recently_merged() {
   local output_file="$1"
+  local days="$2"
   local repo_q
   repo_q=$(build_repo_qualifier)
 
-  # Get number of days to look back (default: 30)
-  local days="${XTV_RECENTLY_MERGED_DAYS:-30}"
-  # Validate it's a positive integer
-  if ! [[ "$days" =~ ^[1-9][0-9]*$ ]]; then
-    days=30
-  fi
-
   local query
-  if [ -n "$repo_q" ]; then
-    query="is:pr is:merged author:@me merged:>=$(date -u -v-${days}d +%Y-%m-%d)${repo_q}"
-  else
-    query="is:pr is:merged author:@me merged:>=$(date -u -v-${days}d +%Y-%m-%d)"
-  fi
+  query="is:pr is:merged author:@me merged:>=$(date -u -v-"${days}"d +%Y-%m-%d)${repo_q}"
 
-  fetch_and_render_prs "$query" "is%3Apr+is%3Amerged+author%3A%40me" 0 "$output_file"
+  fetch_and_render_prs "$query" "is:pr is:merged author:@me" 0 "$output_file"
 }
 
 # Fetch PRs for a specific team
 fetch_team_prs() {
   local team_slug="$1"
   local output_file="$2"
-  local repo_q
-  repo_q=$(build_repo_qualifier)
 
   local query
-  if [ -n "$repo_q" ]; then
-    query="is:pr is:open team-review-requested:${team_slug}${repo_q}"
-  else
-    query="is:pr is:open team-review-requested:${team_slug}"
-  fi
+  local repo_q
 
-  local encoded_team="${team_slug//\//%2F}"
-  fetch_and_render_prs "$query" "is%3Apr+is%3Aopen+team-review-requested%3A${encoded_team}" 1 "$output_file"
+  repo_q=$(build_repo_qualifier)
+  query="is:pr is:open team-review-requested:${team_slug}${repo_q}"
+  fetch_and_render_prs "$query" "is:pr is:open team-review-requested:${team_slug}" 1 "$output_file"
 }
 
 # Initialize indexes (unread, involves, assigned)

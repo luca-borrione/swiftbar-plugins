@@ -8,15 +8,8 @@ set -euo pipefail
 # XTV-TANGO: GitHub Pull Request Menu Bar Plugin for SwiftBar
 # ============================================================================
 
-# Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Source library modules
-source "${SCRIPT_DIR}/xtv-tango/utils.sh"
-source "${SCRIPT_DIR}/xtv-tango/notifications.sh"
-source "${SCRIPT_DIR}/xtv-tango/fetch.sh"
-
-# Dependencies (what/why/how to install)
+# DEPENDENCIES:
+# ----------------------------------------------------------------------------
 # - SwiftBar (or xbar) [host]: runs this plugin in your menu bar.
 #   Install: brew install swiftbar
 #
@@ -36,6 +29,18 @@ source "${SCRIPT_DIR}/xtv-tango/fetch.sh"
 # Environment knobs:
 #   SWIFTBAR_PLUGIN_CACHE_PATH       base dir for avatar/conversation/approvals caches
 #   default '~/Library/Caches/com.ameba.SwiftBar/Plugins/xtv-tango.1m.sh'
+
+# MODULES:
+# ----------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Keep the shellcheck comments to allow jump to definition in the source files
+# shellcheck source=plugins/xtv-tango/utils.sh
+source "${SCRIPT_DIR}/xtv-tango/utils.sh"
+# shellcheck source=plugins/xtv-tango/notifications.sh
+source "${SCRIPT_DIR}/xtv-tango/notifications.sh"
+# shellcheck source=plugins/xtv-tango/fetch.sh
+source "${SCRIPT_DIR}/xtv-tango/fetch.sh"
 
 # You need to ignore these in order to be able to pass your ssh to gh
 unset GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN
@@ -72,7 +77,7 @@ export REPO_HEADER_FONT="Helvetica-Bold" # bold header font (use a font installe
 export REPO_HEADER_SIZE="13"             # header font size
 
 # Recently Merged section configuration
-export XTV_RECENTLY_MERGED_DAYS=30 # number of days to look back for recently merged PRs (default: 30)
+XTV_RECENTLY_MERGED_DAYS=7 # set to a positive integer to enable "Recently Merged"; unset or 0 to hide
 
 # Notification preferences (1=on, 0=off)
 export NOTIFY_NEW_PR=0
@@ -177,6 +182,13 @@ if ! gh auth status -h github.com >/dev/null 2>&1; then
   exit 0
 fi
 
+# If no watched repos are configured, render only the bar icon with 0 and no primary menu
+if [ "${#WATCHED_ARR[@]}" -eq 0 ]; then
+  echo "🔀 0"
+  echo "---"
+  exit 0
+fi
+
 # Initialize indexes and global variables
 init_indexes
 
@@ -192,22 +204,12 @@ TMP_MENU="$(mktemp)"
 SEEN_PRS_FILE="$(mktemp)"
 export SEEN_PRS_FILE
 
-# Track hidden PRs (for "Remove" functionality)
-# Always use the cache directory (SwiftBar sets this variable)
+# Ensure cache directory is available
 if [ -z "$SWIFTBAR_PLUGIN_CACHE_PATH" ]; then
-  # Fallback: construct the path manually if SwiftBar didn't set it
   SWIFTBAR_PLUGIN_CACHE_PATH="$HOME/Library/Caches/com.ameba.SwiftBar/Plugins/xtv-tango.1m.sh"
 fi
-# Ensure cache dir exists (needed when invoked from menu actions)
 mkdir -p "$SWIFTBAR_PLUGIN_CACHE_PATH" 2>/dev/null || true
-HIDDEN_PRS_FILE="$SWIFTBAR_PLUGIN_CACHE_PATH/xtv-hidden-prs.txt"
-touch "$HIDDEN_PRS_FILE" 2>/dev/null || true
 
-# DEBUG: Log to a file to see what's happening
-echo "$(date): SWIFTBAR_PLUGIN_CACHE_PATH=$SWIFTBAR_PLUGIN_CACHE_PATH" >>/tmp/xtv-debug.log
-echo "$(date): HIDDEN_PRS_FILE=$HIDDEN_PRS_FILE" >>/tmp/xtv-debug.log
-
-export HIDDEN_PRS_FILE
 export SWIFTBAR_PLUGIN_CACHE_PATH
 
 ASSIGNED_MAX_PAR="${ASSIGNED_TOTALS_CONCURRENCY:-8}"
@@ -228,33 +230,16 @@ cat "$TMP_MYPR_MENU" >>"$TMP_MENU"
 rm -f "$TMP_MYPR_MENU" 2>/dev/null || true
 
 # 0.c Recently Merged (my recently merged PRs)
-TMP_MERGED_MENU="$(mktemp)"
-TMP_MERGED_URLS="$(mktemp)"
-export SECTION_URLS_FILE="$TMP_MERGED_URLS"
-fetch_recently_merged "$TMP_MERGED_MENU"
-
-# Count how many PRs are in the Recently Merged section (excluding hidden ones)
-MERGED_COUNT=0
-if [ -s "$TMP_MERGED_MENU" ]; then
-  MERGED_COUNT=$(grep -c "^[0-9]*[[:space:]]*--" "$TMP_MERGED_MENU" 2>/dev/null || echo "0")
-fi
-
-# Add section header with Remove All button if there are PRs
-if [ "$MERGED_COUNT" -gt 0 ]; then
-  echo "Recently Merged" >>"$TMP_MENU"
-  # Add "Remove All" button that adds all URLs from this section to hidden list
-  # Persist the list of URLs to the cache so it exists when the menu item is clicked
-  MERGED_URLS_CACHE="$SWIFTBAR_PLUGIN_CACHE_PATH/xtv-recently-merged-urls.txt"
-  cp "$TMP_MERGED_URLS" "$MERGED_URLS_CACHE" 2>/dev/null || : >"$MERGED_URLS_CACHE"
-  _remove_all_cmd="mkdir -p \"$SWIFTBAR_PLUGIN_CACHE_PATH\"; cat \"$MERGED_URLS_CACHE\" >> \"$HIDDEN_PRS_FILE\"; echo \"REMOVE_ALL: $MERGED_URLS_CACHE -> $HIDDEN_PRS_FILE\" >> /tmp/xtv-debug.log"
-  echo "-- Remove All | bash=/bin/bash param1=-lc param2=$(printf %q "$_remove_all_cmd") terminal=false refresh=true" >>"$TMP_MENU"
+DAYS_V="${XTV_RECENTLY_MERGED_DAYS:-}"
+if [[ -z "$DAYS_V" ]] || ! [[ "$DAYS_V" =~ ^[0-9]+$ ]] || ((DAYS_V <= 0)); then
+  : # disabled -> do not add section or fetch
 else
   echo "Recently Merged" >>"$TMP_MENU"
+  TMP_MERGED_MENU="$(mktemp)"
+  fetch_recently_merged "$TMP_MERGED_MENU" "$DAYS_V"
+  cat "$TMP_MERGED_MENU" >>"$TMP_MENU"
+  rm -f "$TMP_MERGED_MENU" 2>/dev/null || true
 fi
-
-cat "$TMP_MERGED_MENU" >>"$TMP_MENU"
-rm -f "$TMP_MERGED_MENU" "$TMP_MERGED_URLS" 2>/dev/null || true
-unset SECTION_URLS_FILE
 
 echo "Assigned to" >>"$TMP_MENU"
 
@@ -265,31 +250,19 @@ TOTAL_DIR="$(mktemp -d)"
 TOTAL_PIDS=()
 for team in "${ASSIGNED_ARR[@]}"; do
 
+  REPO_Q=$(build_repo_qualifier)
+
   COLLECT_ASSIGNED=1
 
-  # Build repo allowlist qualifier if provided
-  REPO_Q=""
-  if [ "${#WATCHED_ARR[@]}" -gt 0 ]; then
-    for r in "${WATCHED_ARR[@]}"; do REPO_Q+=" repo:${r}"; done
-  fi
-  if [ -n "$REPO_Q" ]; then
-    q="is:pr is:open team-review-requested:${team}${REPO_Q}"
-  else
-    q=""
-  fi
+  q="is:pr is:open team-review-requested:${team}${REPO_Q}"
   f="$TOTAL_DIR/${team//\//_}.txt"
   TP_COUNT=$((TP_COUNT + 1))
   if [ $((TP_COUNT % ASSIGNED_MAX_PAR)) -eq 0 ]; then
     for pid in "${TOTAL_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done
     TOTAL_PIDS=()
   fi
-
-  if [ -n "$q" ]; then
-    (gh api graphql -f query='query($q:String!){ search(query:$q, type: ISSUE){ issueCount } }' -F q="$q" --jq '.data.search.issueCount' >"$f" 2>/dev/null || echo "0" >"$f") &
-    TOTAL_PIDS+=($!)
-  else
-    echo "0" >"$f"
-  fi
+  (gh api graphql -f query='query($q:String!){ search(query:$q, type: ISSUE){ issueCount } }' -F q="$q" --jq '.data.search.issueCount' >"$f" 2>/dev/null || echo "0" >"$f") &
+  TOTAL_PIDS+=($!)
 done
 
 # 2.
@@ -335,17 +308,6 @@ if [ "${#RAISED_ARR[@]}" -gt 0 ]; then
       printf "%s\n" "$MEMBERS" >"$MEM_CACHE_FILE" 2>/dev/null || true
     fi
 
-    # If no allowlist provided, keep this team submenu empty
-    if [ "${#WATCHED_ARR[@]}" -eq 0 ]; then
-      RESP='{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}'
-      HEADER_LINK_Q="is%3Apr+is%3Aopen"
-      COLLECT_ASSIGNED=0
-      render_and_update_pagination >>"$TMP_TEAM_MENU"
-      cat "$TMP_TEAM_MENU" >>"$TMP_MENU"
-      rm -f "$TMP_TEAM_MENU" 2>/dev/null || true
-      continue
-    fi
-
     RB_NODES_FILE="$(mktemp)"
     : >"$RB_NODES_FILE"
 
@@ -357,17 +319,10 @@ if [ "${#RAISED_ARR[@]}" -gt 0 ]; then
     if ! [[ "$RB_MAX_PAR" =~ ^[1-9][0-9]*$ ]]; then RB_MAX_PAR=8; fi
     RB_COUNT=0
     for u in $MEMBERS; do
-      # Build server-side qualifiers
-      # Build repo allowlist qualifier if provided for Raised by
-      REPO_Q=""
-      if [ "${#WATCHED_ARR[@]}" -gt 0 ]; then
-        for r in "${WATCHED_ARR[@]}"; do REPO_Q+=" repo:${r}"; done
-      fi
-      if [ -n "$REPO_Q" ]; then
-        RQ="is:pr is:open author:${u}${REPO_Q}"
-      else
-        RQ="is:pr is:open org:${r_org} author:${u}"
-      fi
+      # Build server-side qualifiers using watched repos
+      REPO_Q=$(build_repo_qualifier)
+
+      RQ="is:pr is:open author:${u}${REPO_Q}"
       (
         gh api graphql -F q="$RQ" -F n="$N" -f query='
           query($q:String!,$n:Int!){
@@ -399,13 +354,14 @@ if [ "${#RAISED_ARR[@]}" -gt 0 ]; then
             . as $n
             | select( ($n.repository.nameWithOwner + "\t" + ($n.number|tostring)) as $k | ($assigned | split("\n") | index($k) | not))
           )
+
         | {data:{search:{edges:(map({node:.})), pageInfo:{hasNextPage:false, endCursor:null}}}}' "$RB_NODES_FILE" 2>/dev/null ||
         echo '{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}')
     else
       RESP='{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}'
     fi
 
-    HEADER_LINK_Q="is%3Apr+is%3Aopen"
+    HEADER_LINK_Q="is:pr is:open"
     COLLECT_ASSIGNED=0
     render_and_update_pagination >>"$TMP_TEAM_MENU"
 
