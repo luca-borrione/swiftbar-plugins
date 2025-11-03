@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016,SC2034
-
 # ============================================================================
 # PR FETCHING FUNCTIONS
 # ============================================================================
@@ -14,7 +13,7 @@ fetch_and_render_prs() {
   local collect_assigned="$3"
   local output_file="$4"
 
-  # Set global variables for render function (exported so they're available to render_and_update_pagination)
+  # Set global variables for render function (used in utils.sh)
   export HEADER_LINK_Q="$header_link_q"
   export COLLECT_ASSIGNED="$collect_assigned"
 
@@ -23,7 +22,7 @@ fetch_and_render_prs() {
     query($q:String!,$n:Int!){
       search(query:$q,type:ISSUE,first:$n){
         pageInfo{hasNextPage endCursor}
-        edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads(first:100){nodes{comments{totalCount}}} reviewRequests(first:100){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}}}}
+        edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads{nodes{comments{totalCount}}}}}}
       }}' 2>/dev/null || echo '{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}')
   render_and_update_pagination >>"$output_file"
 
@@ -33,7 +32,7 @@ fetch_and_render_prs() {
       query($q:String!,$n:Int!,$cursor:String!){
         search(query:$q,type:ISSUE,first:$n,after:$cursor){
           pageInfo{hasNextPage endCursor}
-          edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads(first:100){nodes{comments{totalCount}}} reviewRequests(first:100){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}}}}
+          edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads{nodes{comments{totalCount}}}}}}
         }}' 2>/dev/null || echo '{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}')
     render_and_update_pagination >>"$output_file"
   done
@@ -42,89 +41,62 @@ fetch_and_render_prs() {
 # Build repo allowlist qualifier
 build_repo_qualifier() {
   local repo_q=""
-  for r in "${WATCHED_ARR[@]}"; do
-    repo_q+=" repo:${r}"
-  done
+  if [ "${#WATCHED_ARR[@]}" -gt 0 ]; then
+    for r in "${WATCHED_ARR[@]}"; do
+      repo_q+=" repo:${r}"
+    done
+  fi
   echo "$repo_q"
 }
 
-# Fetch "Assigned to Me" PRs (only individual review requests, not team requests)
+# Fetch "Assigned to Me" PRs
 fetch_assigned_to_me() {
   local output_file="$1"
-
   local repo_q
   repo_q=$(build_repo_qualifier)
-  local query
-  query="is:pr is:open review-requested:@me${repo_q}"
 
-  # Set flag to filter only individual review requests (not team requests)
-  export FILTER_INDIVIDUAL_REVIEWS="true"
-  fetch_and_render_prs "$query" "is:pr is:open review-requested:@me" 0 "$output_file"
-  export FILTER_INDIVIDUAL_REVIEWS="false"
+  local query
+  if [ -n "$repo_q" ]; then
+    query="is:pr is:open review-requested:@me${repo_q}"
+  else
+    query="is:pr is:open review-requested:@me"
+  fi
+
+  fetch_and_render_prs "$query" "is%3Apr+is%3Aopen+review-requested%3A%40me" 0 "$output_file"
 }
 
 # Fetch "Raised by Me" PRs
 fetch_raised_by_me() {
   local output_file="$1"
-
   local repo_q
   repo_q=$(build_repo_qualifier)
+
   local query
-  query="is:pr is:open author:@me${repo_q}"
+  if [ -n "$repo_q" ]; then
+    query="is:pr is:open author:@me${repo_q}"
+  else
+    query="is:pr is:open author:@me"
+  fi
 
-  fetch_and_render_prs "$query" "is:pr is:open author:@me" 0 "$output_file"
-}
-
-# Fetch "Recently Merged" PRs (authored by me, merged in the last N days)
-fetch_recently_merged() {
-  local output_file="$1"
-  local days="$2"
-
-  local repo_q
-  repo_q=$(build_repo_qualifier)
-  local query
-  query="is:pr is:merged author:@me merged:>=$(date -u -v-"${days}"d +%Y-%m-%d)${repo_q}"
-
-  fetch_and_render_prs "$query" "is:pr is:merged author:@me" 0 "$output_file"
-}
-
-# Fetch PRs where I was mentioned in comments (exclude my own PRs)
-fetch_mentioned() {
-  local output_file="$1"
-
-  local repo_q
-  repo_q=$(build_repo_qualifier)
-  # Primary: direct mentions (exclude my authored PRs)
-  local q_mentions
-  q_mentions="is:pr is:open mentions:@me${AUTHOR_EXCL}${repo_q}"
-  fetch_and_render_prs "$q_mentions" "is:pr is:open mentions:@me${AUTHOR_EXCL}" 0 "$output_file"
-}
-
-# Fetch PRs I participated in (any involvement: comments, reviews, mentions, or reviews incl. dismissed)
-fetch_participated() {
-  local output_file="$1"
-
-  local repo_q
-  repo_q=$(build_repo_qualifier)
-  local q_involves="is:pr is:open involves:@me${AUTHOR_EXCL}${repo_q}"
-  local q_reviewed="is:pr is:open reviewed-by:@me${AUTHOR_EXCL}${repo_q}"
-
-  # Run both queries; duplicates will be suppressed by SEEN_PRS_FILE during rendering
-  fetch_and_render_prs "$q_involves" "is:pr is:open involves:@me${AUTHOR_EXCL}" 0 "$output_file"
-  fetch_and_render_prs "$q_reviewed" "is:pr is:open reviewed-by:@me${AUTHOR_EXCL}" 0 "$output_file"
+  fetch_and_render_prs "$query" "is%3Apr+is%3Aopen+author%3A%40me" 0 "$output_file"
 }
 
 # Fetch PRs for a specific team
 fetch_team_prs() {
   local team_slug="$1"
   local output_file="$2"
-
   local repo_q
   repo_q=$(build_repo_qualifier)
-  local query
-  query="is:pr is:open team-review-requested:${team_slug}${repo_q}"
 
-  fetch_and_render_prs "$query" "is:pr is:open team-review-requested:${team_slug}" 1 "$output_file"
+  local query
+  if [ -n "$repo_q" ]; then
+    query="is:pr is:open team-review-requested:${team_slug}${repo_q}"
+  else
+    query="is:pr is:open team-review-requested:${team_slug}"
+  fi
+
+  local encoded_team="${team_slug//\//%2F}"
+  fetch_and_render_prs "$query" "is%3Apr+is%3Aopen+team-review-requested%3A${encoded_team}" 1 "$output_file"
 }
 
 # Initialize indexes (unread, involves, assigned)

@@ -78,22 +78,22 @@ export REPO_HEADER_SIZE="13"             # header font size
 
 # Section visibility knobs (1=show, 0=hide)
 SHOW_RAISED_BY_ME_SECTION=1
+SHOW_MENTIONED_SECTION=1
 SHOW_PARTICIPATED_SECTION=1
 SHOW_ASSIGNED_TO_ME_SECTION=1
 SHOW_RECENTLY_MERGED_SECTION=1
-# SHOW_ASSIGNED_TO_TEAMS_SECTION removed; section visibility now depends on ASSIGNED_TO_TEAMS being non-empty
-# SHOW_RAISED_BY_TEAMS_SECTION removed; section visibility now depends on RAISED_BY_TEAMS being non-empty
 
 # Section configuration
 RECENTLY_MERGED_DAYS=7
 
 # Notification preferences (1=on, 0=off)
-export NOTIFY_NEW_PR=0
+export NOTIFY_NEW_PR=1
 export NOTIFY_NEW_COMMENT=1
-export NOTIFY_QUEUE=0
-export NOTIFY_MERGED=0
-export NOTIFY_NEWLY_ASSIGNED=0
-export NOTIFY_REREQUESTED=0
+export NOTIFY_QUEUE=1
+export NOTIFY_MERGED=1
+export NOTIFY_NEWLY_ASSIGNED=1
+export NOTIFY_REREQUESTED=1
+export NOTIFY_MENTIONED=1
 
 # Cache TTL for team members list (seconds). Default: 24 hours
 export TEAM_MEMBERS_CACHE_TTL=86400
@@ -145,13 +145,13 @@ NBCUDTC/peacock-clients-dev-dns
 "
 
 # ============================================================================
-# MAIN EXECUTION LOGIC
-# ============================================================================
-# (All helper functions are in lib/ directory)
-
-# ============================================================================
 # MAIN CODE
 # ============================================================================
+
+# Global author exclusion used by sections that would otherwise duplicate "Raised by Me"
+AUTHOR_EXCL=""
+if [ "${SHOW_RAISED_BY_ME_SECTION:-0}" = "1" ]; then AUTHOR_EXCL=" -author:@me"; fi
+export AUTHOR_EXCL
 
 # Parse into array (trim whitespace, drop empty lines) - compatible with older bash
 ASSIGNED_TO_TEAMS_ARRAY=()
@@ -244,7 +244,19 @@ if [ "${SHOW_RAISED_BY_ME_SECTION:-0}" = "1" ]; then
   rm -f "$TMP_MYPR_MENU" 2>/dev/null || true
 fi
 
-# 0.b Participated (any involvement on open PRs)
+# 0.b Mentioned (tagged me in comments)
+if [ "${SHOW_MENTIONED_SECTION:-0}" = "1" ]; then
+  echo "Mentioned" >>"$TMP_MENU"
+  TMP_MENTIONED_MENU="$(mktemp)"
+  # Collect current mentions for notification diffing
+  MENTIONED_CURR_FILE="$(mktemp)"
+  export MENTIONED_CURR_FILE
+  fetch_mentioned "$TMP_MENTIONED_MENU"
+  cat "$TMP_MENTIONED_MENU" >>"$TMP_MENU"
+  rm -f "$TMP_MENTIONED_MENU" 2>/dev/null || true
+fi
+
+# 0.c Participated (any involvement on open PRs)
 if [ "${SHOW_PARTICIPATED_SECTION:-0}" = "1" ]; then
   echo "Participated" >>"$TMP_MENU"
   TMP_PART_MENU="$(mktemp)"
@@ -253,7 +265,7 @@ if [ "${SHOW_PARTICIPATED_SECTION:-0}" = "1" ]; then
   rm -f "$TMP_PART_MENU" 2>/dev/null || true
 fi
 
-# 0.c Assigned to Me (review requested to me)
+# 0.d Assigned to Me (review requested to me)
 if [ "${SHOW_ASSIGNED_TO_ME_SECTION:-0}" = "1" ]; then
   echo "Assigned to Me" >>"$TMP_MENU"
   TMP_ME_MENU="$(mktemp)"
@@ -262,7 +274,7 @@ if [ "${SHOW_ASSIGNED_TO_ME_SECTION:-0}" = "1" ]; then
   rm -f "$TMP_ME_MENU" 2>/dev/null || true
 fi
 
-# 0.d Recently Merged (my recently merged PRs)
+# 0.e Recently Merged (my recently merged PRs)
 if [ "${SHOW_RECENTLY_MERGED_SECTION:-0}" = "1" ] &&
   [[ -n "${RECENTLY_MERGED_DAYS:-}" ]] &&
   [[ "${RECENTLY_MERGED_DAYS}" =~ ^[0-9]+$ ]] &&
@@ -450,6 +462,11 @@ else
   # Call notification functions
   notify_new_prs "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE"
   notify_newly_assigned "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE" "$STATE_DIR"
+  # Mentions: compare current vs previous Mentioned list and notify on new entries
+  if [ -n "${MENTIONED_CURR_FILE:-}" ]; then
+    STATE_MENTION_FILE="${STATE_DIR}/xtv-tango.mention.state.tsv"
+    notify_mentions "$CURRENT_OPEN_FILE" "$STATE_MENTION_FILE" "$MENTIONED_CURR_FILE" "$NOTIFIED_FILE"
+  fi
 
   # Re-requested review (more complex, kept inline for now)
   # Re-requested review to your team (fires even if already assigned)

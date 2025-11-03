@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016,SC2034
-# SC2034: Variables like HAS_NEXT, CURSOR appear unused but are used in fetch.sh
+# shellcheck disable=SC2016
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -187,10 +186,6 @@ render_and_update_pagination() {
   MERGE_QUEUE_EMOJI="${QUEUE_MARK:-🟠}"
 
   local STREAM
-  # Get current user login for filtering individual review requests
-  local my_login
-  my_login=$(gh api user --jq '.login' 2>/dev/null || echo "")
-
   STREAM=$(echo "$RESP" | jq -r \
     --arg draft "$DRAFT_EMOJI" \
     --arg queue "$MERGE_QUEUE_EMOJI" \
@@ -199,29 +194,17 @@ render_and_update_pagination() {
     --arg hdr "$REPO_HEADER_COLOR" \
     --arg hdrFont "$REPO_HEADER_FONT" \
     --arg hdrSize "$REPO_HEADER_SIZE" \
-    --arg hdrLink "$HEADER_LINK_Q" \
-    --arg myLogin "$my_login" \
-    --arg filterIndividual "${FILTER_INDIVIDUAL_REVIEWS:-false}" '
+    --arg hdrLink "$HEADER_LINK_Q" '
     [ .data.search.edges[].node
       | {repo: .repository.nameWithOwner, number, title, url, isDraft, isInMergeQueue, updatedAt,
           author: (.author.login // "unknown"),
           avatar: (.author.avatarUrl // ""),
           comments: ((.comments.totalCount // 0) + (((.reviewThreads.nodes // []) | map(.comments.totalCount // 0) | add) // 0)),
           reviewDecision: (.reviewDecision // ""),
-          viewerReacted: (((.reactionGroups // []) | map(.viewerHasReacted) | any) // false),
-          reviewRequests: (.reviewRequests.nodes // [])
+          viewerReacted: (((.reactionGroups // []) | map(.viewerHasReacted) | any) // false)
         }
-      # Filter: if FILTER_INDIVIDUAL_REVIEWS is true, only keep PRs with individual review requests
-      | if $filterIndividual == "true" then
-          select(
-            (.reviewRequests | length) == 0 or
-            (.reviewRequests | map(select(.requestedReviewer.login == $myLogin)) | length) > 0
-          )
-        else
-          .
-        end
       | .title |= (
-          (. // "") | gsub("\r";"") | gsub("\n";" ")
+          gsub("\r";"") | gsub("\n";" ")
           | gsub("\\|";"¦")
         )
       | .prefix = (
@@ -235,7 +218,7 @@ render_and_update_pagination() {
     | to_entries
     | .[]
     | (if .key > 0 then "__SEP__" else empty end),
-      (.value[0].repo + ": " + ((.value | length) | tostring) + " | href=https://github.com/\(.value[0].repo)/pulls?q=\($hdrLink|@uri) color=\($hdr) font=\($hdrFont) size=\($hdrSize)"),
+      (.value[0].repo + ": " + ((.value | length) | tostring) + " | href=https://github.com/\(.value[0].repo)/pulls?q=\($hdrLink) color=\($hdr) font=\($hdrFont) size=\($hdrSize)"),
       ( ((if $sort == "activity"
            then (.value | sort_by(.updatedAt | fromdateiso8601))
            else (.value | sort_by(.number))
@@ -244,44 +227,6 @@ render_and_update_pagination() {
         )[]
         | "__PR__\t\(.author)\t\(.avatar)\t\(.url)\t\(.repo)\t\(.number)\t\(.updatedAt)\t\(.comments)\t\(.prefix)\(.title)\t\(.isInMergeQueue)\t\(.reviewDecision)\t\(.viewerReacted)" )
   ')
-
-  # First pass: collect all non-duplicate PRs and count them by repo
-  TMP_FILTERED=$(mktemp)
-  TMP_COUNTS=$(mktemp)
-
-  while IFS= read -r line; do
-    if [[ "$line" == $'__PR__\t'* ]]; then
-      IFS=$'\t' read -r _ login avatar url repo number updated comments title in_queue review_decision viewer_reacted <<<"$line"
-
-      # Mentioned section: collect for notifications when enabled (capture before dedup)
-      if [ "${MENTION_CAPTURE:-0}" = "1" ]; then
-        if [ -n "${MENTIONED_CURR_FILE:-}" ]; then
-          printf "%s\t%s\n" "$repo" "$number" >>"$MENTIONED_CURR_FILE"
-        fi
-      fi
-
-      # Skip if this PR has already been displayed in a previous section
-      if [ -n "${SEEN_PRS_FILE:-}" ] && [ -f "$SEEN_PRS_FILE" ] && grep -q -F -x "$url" "$SEEN_PRS_FILE" 2>/dev/null; then
-        continue
-      fi
-
-      # Mark this PR as seen
-      if [ -n "${SEEN_PRS_FILE:-}" ]; then
-        echo "$url" >>"$SEEN_PRS_FILE"
-      fi
-
-      # Track count for this repo (using a file instead of associative array for Bash 3.2 compatibility)
-      echo "$repo" >>"$TMP_COUNTS"
-
-      # Save the line for second pass
-      echo "$line" >>"$TMP_FILTERED"
-    else
-      # Save non-PR lines (headers, separators)
-      echo "$line" >>"$TMP_FILTERED"
-    fi
-  done <<<"$STREAM"
-
-  # Second pass: render with corrected counts
   TMP_OUT=$(mktemp)
   idx=0
   MAX_PAR="${XTV_CONC:-6}"
@@ -290,7 +235,6 @@ render_and_update_pagination() {
   while IFS= read -r line; do
     if [[ "$line" == $'__PR__\t'* ]]; then
       IFS=$'\t' read -r _ login avatar url repo number updated comments title in_queue review_decision viewer_reacted <<<"$line"
-
       local_idx=$idx
       idx=$((idx + 1))
       (
@@ -350,16 +294,16 @@ render_and_update_pagination() {
         if [[ -n "$b64" ]]; then
           if [ "${marked_rereq:-0}" -eq 1 ]; then
             _click_cmd="grep -v -F -- \"$needle\" \"$REREQ_HITS_FILE\" >\"$REREQ_HITS_FILE.tmp\" || true; mv \"$REREQ_HITS_FILE.tmp\" \"$REREQ_HITS_FILE\" || true; open \"$url\""
-            printf "%s\t-- %s%s | bash=/bin/bash param1=-lc param2='%s' terminal=false refresh=true image=%s\n" \
-              "$local_idx" "$label" "$suffix" "$(printf "%s" "$_click_cmd" | sed "s/'/'\\''/g")" "$b64"
+            printf "%s\t-- %s%s | bash=/bin/bash param1=-lc param2=%q terminal=false refresh=true image=%s\n" \
+              "$local_idx" "$label" "$suffix" "$_click_cmd" "$b64"
           else
             printf "%s\t-- %s%s | href=%s image=%s\n" "$local_idx" "$label" "$suffix" "$url" "$b64"
           fi
         else
           if [ "${marked_rereq:-0}" -eq 1 ]; then
             _click_cmd="grep -v -F -- \"$needle\" \"$REREQ_HITS_FILE\" >\"$REREQ_HITS_FILE.tmp\" || true; mv \"$REREQ_HITS_FILE.tmp\" \"$REREQ_HITS_FILE\" || true; open \"$url\""
-            printf "%s\t-- %s%s | bash=/bin/bash param1=-lc param2='%s' terminal=false refresh=true sfimage=person.crop.circle\n" \
-              "$local_idx" "$label" "$suffix" "$(printf "%s" "$_click_cmd" | sed "s/'/'\\''/g")"
+            printf "%s\t-- %s%s | bash=/bin/bash param1=-lc param2=%q terminal=false refresh=true sfimage=person.crop.circle\n" \
+              "$local_idx" "$label" "$suffix" "$_click_cmd"
           else
             printf "%s\t-- %s%s | href=%s sfimage=person.crop.circle\n" "$local_idx" "$label" "$suffix" "$url"
           fi
@@ -380,38 +324,19 @@ render_and_update_pagination() {
           sort -n -t $'\t' -k1,1 "$TMP_OUT" | cut -f2-
           : >"$TMP_OUT"
         fi
+        # Insert a separator before this repo header, except before the very first one
+        if ((SEEN_HEADER == 1)); then echo "--"; fi
+        SEEN_HEADER=1
       fi
-      # Update the count in the header line
-      # Extract repo name from header (format: "REPO: COUNT | href=...")
-      if [[ "$line" =~ ^([^:]+):[[:space:]]*[0-9]+[[:space:]]*\|(.*)$ ]]; then
-        repo_name="${BASH_REMATCH[1]}"
-        rest="${BASH_REMATCH[2]}"
-        # Count occurrences of this repo in TMP_COUNTS file
-        corrected_count=$(grep -c -F -x "$repo_name" "$TMP_COUNTS" 2>/dev/null || echo "0")
-        # Ensure corrected_count is a valid integer
-        if ! [[ "$corrected_count" =~ ^[0-9]+$ ]]; then
-          corrected_count=0
-        fi
-        # Only output the header (and a preceding separator) if there are PRs to show
-        if [ "$corrected_count" -gt 0 ]; then
-          if ((SEEN_HEADER == 1)); then echo "--"; fi
-          SEEN_HEADER=1
-          echo "-- $repo_name: $corrected_count |$rest"
-        fi
-      else
-        :
-      fi
+      echo "-- $line"
     fi
-  done <"$TMP_FILTERED"
+  done <<<"$STREAM"
   # Final flush
   for pid in $(jobs -pr); do wait "$pid" 2>/dev/null || true; done
   if [[ -s "$TMP_OUT" ]]; then
     sort -n -t $'\t' -k1,1 "$TMP_OUT" | cut -f2-
   fi
-  rm -f "$TMP_OUT" "$TMP_FILTERED" "$TMP_COUNTS" 2>/dev/null || true
-  # Export pagination variables so they're available to fetch_and_render_prs
+  rm -f "$TMP_OUT" 2>/dev/null || true
   HAS_NEXT=$(echo "$RESP" | jq -r '.data.search.pageInfo.hasNextPage')
-  export HAS_NEXT
   CURSOR=$(echo "$RESP" | jq -r '.data.search.pageInfo.endCursor')
-  export CURSOR
 }
