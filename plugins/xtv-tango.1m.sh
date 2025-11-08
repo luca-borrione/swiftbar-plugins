@@ -134,15 +134,15 @@ NBCUDTC/client-container-prospero
 NBCUDTC/client-container-tizen
 NBCUDTC/client-container-webmaf
 NBCUDTC/client-lib-js-device
-NBCUDTC/github-repos-deploy
 NBCUDTC/gst-apps-client-lib
 NBCUDTC/gst-apps-xtv
 NBCUDTC/gst-apps-xtv-config
-NBCUDTC/gst-shader-service
 NBCUDTC/peacock-cliapps-ci
 NBCUDTC/peacock-cliapps-nbcu-release
 NBCUDTC/peacock-clients-dev-dns
 "
+# NBCUDTC/github-repos-deploy
+# NBCUDTC/gst-shader-service
 
 # ============================================================================
 # MAIN CODE
@@ -160,6 +160,7 @@ while IFS= read -r line; do
   [ -z "$line" ] && continue
   ASSIGNED_TO_TEAMS_ARRAY+=("$line")
 done <<<"$ASSIGNED_TO_TEAMS"
+
 # Derived visibility flag for clarity
 if [ "${#ASSIGNED_TO_TEAMS_ARRAY[@]}" -gt 0 ]; then
   SHOW_ASSIGNED_TO_TEAMS_SECTION=1
@@ -173,6 +174,7 @@ while IFS= read -r line; do
   [ -z "$line" ] && continue
   RAISED_BY_TEAMS_ARRAY+=("$line")
 done <<<"$RAISED_BY_TEAMS"
+
 # Derived visibility flag for clarity
 if [ "${#RAISED_BY_TEAMS_ARRAY[@]}" -gt 0 ]; then
   SHOW_RAISED_BY_TEAMS_SECTION=1
@@ -225,6 +227,7 @@ SEEN_PRS_FILE="$(mktemp)"
 export SEEN_PRS_FILE
 
 # Ensure cache directory is available
+
 if [ -z "$SWIFTBAR_PLUGIN_CACHE_PATH" ]; then
   SWIFTBAR_PLUGIN_CACHE_PATH="$HOME/Library/Caches/com.ameba.SwiftBar/Plugins/xtv-tango.1m.sh"
 fi
@@ -234,6 +237,7 @@ export SWIFTBAR_PLUGIN_CACHE_PATH
 
 ASSIGNED_MAX_PAR="${ASSIGNED_TOTALS_CONCURRENCY:-8}"
 if ! [[ "$ASSIGNED_MAX_PAR" =~ ^[1-9][0-9]*$ ]]; then ASSIGNED_MAX_PAR=8; fi
+
 # Personal sections before team sections
 # 0.a Raised by Me (my authored PRs)
 if [ "${SHOW_RAISED_BY_ME_SECTION:-0}" = "1" ]; then
@@ -360,6 +364,11 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
       MEMBERS=$(gh api "orgs/$r_org/teams/$r_name/members?per_page=100" --jq '.[].login' 2>/dev/null || true)
       printf "%s\n" "$MEMBERS" >"$MEM_CACHE_FILE" 2>/dev/null || true
     fi
+    # Build active-window qualifier and authors list for header links (space-separated author: qualifiers)
+    RB_AUTHORS_LIST=""
+    for u in $MEMBERS; do
+      RB_AUTHORS_LIST+=" author:${u}"
+    done
 
     RB_NODES_FILE="$(mktemp)"
     : >"$RB_NODES_FILE"
@@ -414,14 +423,35 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
       RESP='{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}'
     fi
 
-    HEADER_LINK_Q="is:pr is:open"
+    if [ -n "$RB_AUTHORS_LIST" ]; then
+      HEADER_LINK_Q="is:pr is:open${RB_AUTHORS_LIST}"
+    else
+      HEADER_LINK_Q="is:pr is:open"
+    fi
+    HEADER_LINK_KIND="search"
     COLLECT_ASSIGNED=0
     render_and_update_pagination >>"$TMP_TEAM_MENU"
+    unset HEADER_LINK_KIND
 
     cat "$TMP_TEAM_MENU" >>"$TMP_MENU"
     rm -f "$TMP_TEAM_MENU" "$RB_NODES_FILE" 2>/dev/null || true
   done
 fi
+
+# Separator and "All" section listing every open PR in watched repos (deduped against previous sections)
+if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
+  echo "---" >>"$TMP_MENU"
+fi
+
+echo "All" >>"$TMP_MENU"
+TMP_ALL_MENU="$(mktemp)"
+(
+  # Dedupe "All" against earlier sections (use SEEN_PRS_FILE)
+  fetch_all "$TMP_ALL_MENU"
+)
+cat "$TMP_ALL_MENU" >>"$TMP_MENU"
+
+rm -f "$TMP_ALL_MENU" 2>/dev/null || true
 
 # Wait for total count jobs, then print header and buffered list
 for pid in "${TOTAL_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done
@@ -455,6 +485,7 @@ set +e
 if [ ! -s "$STATE_FILE" ]; then
   # Prime state on first run; avoid spamming notifications
   cp "$CURRENT_OPEN_FILE" "$STATE_FILE" 2>/dev/null || true
+
 else
   # Build maps for current and previous
   PREV="$STATE_FILE"

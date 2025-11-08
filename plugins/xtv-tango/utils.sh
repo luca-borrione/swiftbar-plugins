@@ -191,18 +191,25 @@ render_and_update_pagination() {
   local my_login
   my_login=$(gh api user --jq '.login' 2>/dev/null || echo "")
 
-  STREAM=$(echo "$RESP" | jq -r \
-    --arg draft "$DRAFT_EMOJI" \
-    --arg queue "$MERGE_QUEUE_EMOJI" \
-    --arg sort "$SORT_PREF" \
-    --arg dir "$SORT_DIR" \
-    --arg hdr "$REPO_HEADER_COLOR" \
-    --arg hdrFont "$REPO_HEADER_FONT" \
-    --arg hdrSize "$REPO_HEADER_SIZE" \
-    --arg hdrLink "$HEADER_LINK_Q" \
-    --arg myLogin "$my_login" \
-    --arg filterIndividual "${FILTER_INDIVIDUAL_REVIEWS:-false}" '
-    [ .data.search.edges[].node
+  # If RESP is not valid JSON, fall back to an empty search result to avoid jq parse errors
+  if ! echo "$RESP" | jq -e . >/dev/null 2>&1; then
+    RESP='{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}'
+  fi
+
+  STREAM=$(
+    echo "$RESP" | jq -r \
+      --arg draft "$DRAFT_EMOJI" \
+      --arg queue "$MERGE_QUEUE_EMOJI" \
+      --arg sort "$SORT_PREF" \
+      --arg dir "$SORT_DIR" \
+      --arg hdr "$REPO_HEADER_COLOR" \
+      --arg hdrFont "$REPO_HEADER_FONT" \
+      --arg hdrSize "$REPO_HEADER_SIZE" \
+      --arg hdrLink "$HEADER_LINK_Q" \
+      --arg hdrLinkKind "${HEADER_LINK_KIND:-pulls}" \
+      --arg myLogin "$my_login" \
+      --arg filterIndividual "${FILTER_INDIVIDUAL_REVIEWS:-false}" '
+    [ ((.data.search.edges // [])[] | .node)
       | {repo: .repository.nameWithOwner, number, title, url, isDraft, isInMergeQueue, updatedAt,
           author: (.author.login // "unknown"),
           avatar: (.author.avatarUrl // ""),
@@ -235,7 +242,14 @@ render_and_update_pagination() {
     | to_entries
     | .[]
     | (if .key > 0 then "__SEP__" else empty end),
-      (.value[0].repo + ": " + ((.value | length) | tostring) + " | href=https://github.com/\(.value[0].repo)/pulls?q=\($hdrLink|@uri) color=\($hdr) font=\($hdrFont) size=\($hdrSize)"),
+      (
+        .value[0].repo + ": " + ((.value | length) | tostring) + " | href=" +
+        (if $hdrLinkKind == "search"
+         then ("https://github.com/search?q=" + (($hdrLink + " repo:" + .value[0].repo) | @uri) + "&type=pullrequests")
+         else ("https://github.com/" + .value[0].repo + "/pulls?q=" + ($hdrLink|@uri))
+         end)
+        + " color=" + $hdr + " font=" + $hdrFont + " size=" + $hdrSize
+      ),
       ( ((if $sort == "activity"
            then (.value | sort_by(.updatedAt | fromdateiso8601))
            else (.value | sort_by(.number))
@@ -243,7 +257,8 @@ render_and_update_pagination() {
          | (if $dir == "desc" then reverse else . end)
         )[]
         | "__PR__\t\(.author)\t\(.avatar)\t\(.url)\t\(.repo)\t\(.number)\t\(.updatedAt)\t\(.comments)\t\(.prefix)\(.title)\t\(.isInMergeQueue)\t\(.reviewDecision)\t\(.viewerReacted)" )
-  ')
+  '
+  )
 
   # First pass: collect all non-duplicate PRs and count them by repo
   TMP_FILTERED=$(mktemp)
