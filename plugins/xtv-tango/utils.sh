@@ -180,16 +180,74 @@ get_pr_data_combined() {
   fi
 }
 
+# Return 1 if my latest review is APPROVED (and not superseded by CHANGES_REQUESTED/DISMISSED), else 0
+get_my_approval_flag() {
+  local repo="$1" number="$2" updatedAt="$3"
+  local cache_dir="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-my-approval-v1"
+  mkdir -p "$cache_dir"
+  local key="${repo//\//_}-${number}.txt"
+  local file="$cache_dir/$key"
+
+  if [[ -s "$file" ]]; then
+    local cached_updated cached_flag
+    IFS=$'\t' read -r cached_updated cached_flag <"$file" || true
+    if [[ "$cached_updated" == "$updatedAt" && "$cached_flag" =~ ^[01]$ ]]; then
+      echo "$cached_flag"
+      return 0
+    fi
+  fi
+
+  local owner="${repo%%/*}"
+  local rname="${repo#*/}"
+  local viewer="${MY_LOGIN:-}"
+
+  local me_login_used mine_state latest_count flag dbg_out rest_state
+  dbg_out=$(gh api graphql -F owner="$owner" -F name="$rname" -F number="$number" -f query='
+    query($owner:String!,$name:String!,$number:Int!){
+      viewer { login }
+      repository(owner:$owner,name:$name){
+        pullRequest(number:$number){
+          latestReviews(last:100){ nodes{ author{login} state } }
+        }
+      }
+    }' 2>/dev/null | jq -r --arg viewer "$viewer" '
+      . as $root |
+      ($root.data.viewer.login // "") as $viewerLogin |
+      $root.data.repository.pullRequest as $pr |
+      if $pr == null then
+        ("\t\t0\t0")
+      else
+        (($viewer // "") | length) as $len |
+        (if $len > 0 then $viewer else $viewerLogin end) as $meLogin |
+        (($pr.latestReviews.nodes // [])) as $nodes |
+        (reduce $nodes[] as $r ({}) (.[(($r.author.login // "") | ascii_downcase)] = ($r.state // ""))) as $latest |
+        ($latest[($meLogin | ascii_downcase)] // "") as $mine |
+        (if $mine == "APPROVED" then "1" else "0" end) as $flag |
+        "\($meLogin)\t\($mine)\t\($flag)\t\($nodes|length)"
+      end
+    ' 2>/dev/null)
+  IFS=$'\t' read -r me_login_used mine_state flag latest_count <<<"$dbg_out"
+
+  # Fallback via REST: verify latest state per user
+  if [[ "$flag" != "1" && (-z "$me_login_used" || "$latest_count" = "0") ]]; then
+    rest_state=$(gh api "repos/$repo/pulls/$number/reviews?per_page=100" \
+      --jq 'reverse | reduce .[] as $r ({}; .[$r.user.login] //= ($r.state // "")) | .["'"${viewer:-}"'"] // ""' 2>/dev/null || echo "")
+    if [[ "$rest_state" == "APPROVED" ]]; then flag="1"; elif [[ "$flag" != "1" ]]; then flag="0"; fi
+  fi
+
+  if [[ "$flag" != "1" && "$flag" != "0" ]]; then flag="0"; fi
+  printf "%s\t%s\n" "$updatedAt" "$flag" >"$file.tmp" 2>/dev/null && mv "$file.tmp" "$file" 2>/dev/null || true
+  echo "$flag"
+}
+
 # Render RESP and update pagination variables
 render_and_update_pagination() {
-  # Emoji symbols (only these are colored; rest of the line remains normal)
-  DRAFT_EMOJI="${DRAFT_MARK:-⚪}"
-  MERGE_QUEUE_EMOJI="${QUEUE_MARK:-🟠}"
+  # Only emoji symbols can be colored; the rest of the line remains normal
 
   local STREAM
-  # Get current user login for filtering individual review requests
+  # Get current user login (GraphQL viewer first; fallback to REST)
   local my_login
-  my_login=$(gh api user --jq '.login' 2>/dev/null || echo "")
+  my_login=$(gh api graphql -f query='query{viewer{login}}' --jq '.data.viewer.login' 2>/dev/null || gh api user --jq '.login' 2>/dev/null || echo "")
 
   # If RESP is not valid JSON, fall back to an empty search result to avoid jq parse errors
   if ! echo "$RESP" | jq -e . >/dev/null 2>&1; then
@@ -198,8 +256,8 @@ render_and_update_pagination() {
 
   STREAM=$(
     echo "$RESP" | jq -r \
-      --arg draft "$DRAFT_EMOJI" \
-      --arg queue "$MERGE_QUEUE_EMOJI" \
+      --arg draft "${DRAFT_MARK:-}" \
+      --arg queue "${QUEUE_MARK:-}" \
       --arg sort "$SORT_PREF" \
       --arg dir "$SORT_DIR" \
       --arg hdr "$REPO_HEADER_COLOR" \
@@ -318,8 +376,8 @@ render_and_update_pagination() {
         label="$title"
         b64=$(get_avatar_b64 "$login" "$avatar" 20)
         suffix=""
-        if ((conv > 0)); then suffix+="  ${COMMENT_MARK:-💬}${conv}"; fi
-        if ((appr > 0)); then suffix+="  ${APPROVAL_MARK:-✅}${appr}"; fi
+        if ((conv > 0)); then suffix+="  ${COMMENT_MARK:-}${conv}"; fi
+        if ((appr > 0)); then suffix+="  ${APPROVAL_MARK:-}${appr}"; fi
         # key for lookups
         needle="$repo"$'\t'"$number"
         # not participated yet (no involves:@me and no reaction on PR body)
@@ -328,18 +386,26 @@ render_and_update_pagination() {
           participated=1
         fi
         if [ "$participated" -eq 0 ] && [ "${viewer_reacted:-false}" != "true" ]; then
-          label="${NOT_PARTICIPATED_MARK:-🟡} $label"
+          label="${NOT_PARTICIPATED_MARK:-} $label"
         fi
 
-        if [ "${review_decision:-}" = "CHANGES_REQUESTED" ]; then suffix+="  ${CHANGES_REQUESTED_MARK:-🛑}"; fi
+        # If this render pass is for reviewed-by:@me, check my approval state and prepend green dot if approved
+        if [ "${CHECK_MY_APPROVAL:-0}" = "1" ]; then
+          viewer_approved=$(MY_LOGIN="$my_login" get_my_approval_flag "$repo" "$number" "$updated" 2>/dev/null)
+          if [ "$viewer_approved" = "1" ]; then
+            label="${APPROVED_BY_ME_MARK:-🟢} $label"
+          fi
+        fi
+
+        if [ "${review_decision:-}" = "CHANGES_REQUESTED" ]; then suffix+="  ${CHANGES_REQUESTED_MARK:-}"; fi
         # unread notifications red dot
         if [ -s "$UNREAD_FILE" ] && grep -x -F -- "$needle" "$UNREAD_FILE" >/dev/null 2>&1; then
-          suffix+="  ${UNREAD_MARK:-❗}"
+          suffix+="  ${UNREAD_MARK:-}"
         fi
         # marker for PRs that were re-requested in the previous run
         marked_rereq=0
         if [ -s "$REREQ_HITS_FILE" ] && grep -x -F -- "$needle" "$REREQ_HITS_FILE" >/dev/null 2>&1; then
-          suffix+="  ${REREQUESTED_MARK:-🔄}"
+          suffix+="  ${REREQUESTED_MARK:-}"
           marked_rereq=1
         fi
 

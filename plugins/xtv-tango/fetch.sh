@@ -226,9 +226,13 @@ fetch_participated() {
   local q_involves="is:pr is:open involves:@me${AUTHOR_EXCL}${repo_q}"
   local q_reviewed="is:pr is:open reviewed-by:@me${AUTHOR_EXCL}${repo_q}"
 
-  # Run both queries; duplicates will be suppressed by SEEN_PRS_FILE during rendering
-  fetch_and_render_prs "$q_involves" "is:pr is:open involves:@me${AUTHOR_EXCL}" 0 "$output_file"
+  # Run reviewed-by first so approved PRs get decorated before dedupe, then involves
+  export CHECK_MY_APPROVAL="1"
   fetch_and_render_prs "$q_reviewed" "is:pr is:open reviewed-by:@me${AUTHOR_EXCL}" 0 "$output_file"
+  # Ensure a visual gap between the reviewed-by and involves blocks
+  if [ -s "$output_file" ]; then echo "--" >>"$output_file"; fi
+  export CHECK_MY_APPROVAL="0"
+  fetch_and_render_prs "$q_involves" "is:pr is:open involves:@me${AUTHOR_EXCL}" 0 "$output_file"
 }
 
 # Fetch PRs for a specific team

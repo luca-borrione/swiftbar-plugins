@@ -102,12 +102,13 @@ export TEAM_MEMBERS_CACHE_TTL=86400
 export RAISED_BY_CONCURRENCY=12
 # Concurrency for "Assigned to" totals-count across teams; must be a positive integer
 export ASSIGNED_TOTALS_CONCURRENCY=12
-
+# ⚪
 # Marks for metrics/state; customize as you like
 export APPROVAL_MARK="✅"
+export APPROVED_BY_ME_MARK="🟢"
 export CHANGES_REQUESTED_MARK="⛔"
 export COMMENT_MARK="💬"
-export DRAFT_MARK="⚪"
+export DRAFT_MARK="▪️"
 export NOT_PARTICIPATED_MARK="🔅" # Shown when I'm not involved yet. Clears after I comment/approve/request changes or react to PR body. Comment reactions not counted.
 export QUEUE_MARK="🟠"
 export REREQUESTED_MARK="🔄"
