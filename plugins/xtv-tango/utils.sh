@@ -37,8 +37,3 @@ tmp_make() {
 tmp_txt() { tmp_make "$1" "${2:-$1}" ".txt"; }
 tmp_tsv() { tmp_make "$1" "${2:-$1}" ".tsv"; }
 tmp_json() { tmp_make "$1" "${2:-$1}" ".json"; }
-
-# Stop loading here to avoid legacy duplicates; functions below were migrated to
-# cache-utils.sh, fetch-utils.sh, and render-utils.sh.
-# Returning is safe because this file is only sourced, never executed directly.
-return 0 2>/dev/null || true
