@@ -397,11 +397,12 @@ render_and_update_pagination() {
         fi
       fi
       # Update the count in the header line
-      # Extract repo name from header (format: "REPO: COUNT | href=...")
-      if [[ "$line" =~ ^([^:]+):[[:space:]]*[0-9]+[[:space:]]*\|(.*)$ ]]; then
+      # Extract repo name and original (pre-dedupe) count from header: "REPO: COUNT | href=..."
+      if [[ "$line" =~ ^([^:]+):[[:space:]]*([0-9]+)[[:space:]]*\|(.*)$ ]]; then
         repo_name="${BASH_REMATCH[1]}"
-        rest="${BASH_REMATCH[2]}"
-        # Count occurrences of this repo in TMP_COUNTS file
+        orig_count="${BASH_REMATCH[2]}"
+        rest="${BASH_REMATCH[3]}"
+        # Count occurrences of this repo in TMP_COUNTS file (deduped count)
         corrected_count=$(grep -c -F -x "$repo_name" "$TMP_COUNTS" 2>/dev/null || echo "0")
         # Ensure corrected_count is a valid integer
         if ! [[ "$corrected_count" =~ ^[0-9]+$ ]]; then
@@ -411,7 +412,11 @@ render_and_update_pagination() {
         if [ "$corrected_count" -gt 0 ]; then
           if ((SEEN_HEADER == 1)); then echo "--"; fi
           SEEN_HEADER=1
-          echo "-- $repo_name: $corrected_count |$rest"
+          if [[ "$orig_count" =~ ^[0-9]+$ ]] && [ "$corrected_count" -ne "$orig_count" ]; then
+            echo "-- $repo_name: $corrected_count out of $orig_count |$rest"
+          else
+            echo "-- $repo_name: $corrected_count |$rest"
+          fi
         fi
       else
         :
