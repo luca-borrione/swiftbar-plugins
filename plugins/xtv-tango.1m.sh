@@ -37,13 +37,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Keep the shellcheck comments to allow jump to definition in the source files
 # shellcheck source=plugins/xtv-tango/utils.sh
 source "${SCRIPT_DIR}/xtv-tango/utils.sh"
-# shellcheck source=plugins/xtv-tango/notifications.sh
-source "${SCRIPT_DIR}/xtv-tango/notifications.sh"
-# shellcheck source=plugins/xtv-tango/fetch.sh
-source "${SCRIPT_DIR}/xtv-tango/fetch.sh"
+# shellcheck source=plugins/xtv-tango/cache-utils.sh
+source "${SCRIPT_DIR}/xtv-tango/cache-utils.sh"
+# shellcheck source=plugins/xtv-tango/fetch-pr-data-utils.sh
+source "${SCRIPT_DIR}/xtv-tango/fetch-pr-data-utils.sh"
+# shellcheck source=plugins/xtv-tango/render-utils.sh
+source "${SCRIPT_DIR}/xtv-tango/render-utils.sh"
+# shellcheck source=plugins/xtv-tango/notifications-utils.sh
+source "${SCRIPT_DIR}/xtv-tango/notifications-utils.sh"
+# shellcheck source=plugins/xtv-tango/fetch-prs-utils.sh
+source "${SCRIPT_DIR}/xtv-tango/fetch-prs-utils.sh"
 
-# You need to ignore these in order to be able to pass your ssh to gh
-unset GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN
+# # You need to ignore these in order to be able to pass your ssh to gh
+# unset GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 
 # Optional: macOS notification wrapper (no-op if terminal-notifier is missing)
@@ -72,7 +78,7 @@ fi
 # mkdir -p "$SWIFTBAR_PLUGIN_CACHE_PATH" 2>/dev/null || true
 # export SWIFTBAR_PLUGIN_CACHE_PATH
 TMP_DIR="$SWIFTBAR_PLUGIN_CACHE_PATH/tmp"
-rm -rf "$TMP_DIR" 2>/dev/null || true
+# rm -rf "$TMP_DIR" 2>/dev/null || true
 mkdir -p "$TMP_DIR" 2>/dev/null || true
 export TMP_DIR
 
