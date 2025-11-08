@@ -399,6 +399,7 @@ render_and_update_pagination() {
   idx=0
   MAX_PAR="${XTV_CONC:-6}"
   SEEN_HEADER=0
+  ALL_TOTAL=0
 
   while IFS= read -r line; do
     if [[ "$line" == $'__PR__\t'* ]]; then
@@ -527,8 +528,10 @@ render_and_update_pagination() {
           SEEN_HEADER=1
           if [[ "$orig_count" =~ ^[0-9]+$ ]] && [ "$corrected_count" -ne "$orig_count" ]; then
             echo "-- $repo_name: $corrected_count out of $orig_count |$rest"
+            ALL_TOTAL=$((ALL_TOTAL + orig_count))
           else
             echo "-- $repo_name: $corrected_count |$rest"
+            ALL_TOTAL=$((ALL_TOTAL + corrected_count))
           fi
         fi
       else

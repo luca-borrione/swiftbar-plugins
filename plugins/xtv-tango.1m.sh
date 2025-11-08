@@ -106,7 +106,7 @@ export TEAM_MEMBERS_CACHE_TTL=86400
 export RAISED_BY_CONCURRENCY=12
 # Concurrency for "Assigned to" totals-count across teams; must be a positive integer
 export ASSIGNED_TOTALS_CONCURRENCY=12
-# ⚪
+
 # Marks for metrics/state; customize as you like
 export APPROVAL_DISMISSED_MARK="⚪"
 export APPROVAL_MARK="✅"
@@ -451,12 +451,10 @@ fi
 
 echo "All" >>"$TMP_MENU"
 TMP_ALL_MENU="$(mktemp)"
-(
-  # Dedupe "All" against earlier sections (use SEEN_PRS_FILE)
-  fetch_all "$TMP_ALL_MENU"
-)
+# Compute the All total directly during rendering via a single accumulator
+ALL_TOTAL=0
+fetch_all "$TMP_ALL_MENU"
 cat "$TMP_ALL_MENU" >>"$TMP_MENU"
-ALL_TOTAL=$(awk 'match($0, /^-- [^:]+: ([0-9]+)/, a){sum+=a[1]} END{print (sum+0)}' "$TMP_ALL_MENU" 2>/dev/null || echo 0)
 
 rm -f "$TMP_ALL_MENU" 2>/dev/null || true
 
@@ -469,8 +467,8 @@ for f in "$TOTAL_DIR"/*.txt; do
   TOTAL=$((TOTAL + v))
 done
 
-# Bar Title for when logged in: just an icon and the total PR count (All section grand total)
-echo "🔀 ${ALL_TOTAL}"
+# Bar Title for when logged in: just an icon and the total PR count
+echo "🔀 ${ALL_TOTAL:-}"
 echo "---"
 cat "$TMP_MENU"
 
