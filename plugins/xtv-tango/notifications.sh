@@ -128,6 +128,41 @@ notify_rerequested() {
   mv "$CURR_REREQ_FILE" "$state_rereq_file" 2>/dev/null || cp "$CURR_REREQ_FILE" "$state_rereq_file" 2>/dev/null || true
 }
 
+# Notify when my approval was dismissed (deduped by timestamp)
+notify_approval_dismissed() {
+  local current_file="$1"  # CURRENT_OPEN_FILE (for title/url lookup)
+  local notified_file="$2" # NOTIFIED_FILE
+  local hits_file="$3"     # DISMISSED_HITS_FILE (repo\tnum\tts per line)
+
+  [ "${NOTIFY_APPROVAL_DISMISSED:-1}" != "1" ] && return 0
+  [ -n "$hits_file" ] || return 0
+  [ -s "$hits_file" ] || return 0
+
+  while IFS=$'\t' read -r repo num ts; do
+    [ -n "$repo" ] && [ -n "$num" ] && [ -n "$ts" ] || continue
+    local notif_key="approval-dismissed:${repo}#${num}:${ts}"
+    if grep -q -F -x "$notif_key" "$notified_file" 2>/dev/null; then
+      continue
+    fi
+    # Lookup title/url from current index; fallback to constructing URL
+    local row title url
+    row=$(awk -F'\t' -v r="$repo" -v n="$num" '$1==r && $2==n {print; exit}' "$current_file")
+    if [ -n "$row" ]; then
+      title=$(echo "$row" | cut -f3)
+      url=$(echo "$row" | cut -f4)
+    else
+      title="PR #$num"
+      url="https://github.com/$repo/pull/$num"
+    fi
+    local gid="xtv-pr-${repo//\//-}-${num}-approval-dismissed"
+    notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "Your approval was dismissed" -subtitle "$repo #$num" -message "${title//\"/\\\"}" -open "$url" -sound default
+    echo "$notif_key" >>"$notified_file"
+  done <"$hits_file"
+
+  # Clear hits once processed (NOTIFIED_FILE prevents duplicates across runs)
+  : >"$hits_file"
+}
+
 # Notify about new comments
 notify_new_comments() {
   local current_file="$1"

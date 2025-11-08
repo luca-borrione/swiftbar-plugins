@@ -64,8 +64,11 @@ notify() {
     return 0
   fi
 }
+
 # File used to mark PRs that were re-requested in the previous run (for menu emoji)
 REREQ_HITS_FILE="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-tango.rerequest.hits"
+# File used to record "my approval dismissed" hits (for notifications)
+DISMISSED_HITS_FILE="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-tango.approvaldismissed.hits"
 
 # CONFIG:
 # ---------
@@ -87,13 +90,14 @@ SHOW_RECENTLY_MERGED_SECTION=1
 RECENTLY_MERGED_DAYS=7
 
 # Notification preferences (1=on, 0=off)
-export NOTIFY_NEW_PR=1
-export NOTIFY_NEW_COMMENT=1
-export NOTIFY_QUEUE=1
-export NOTIFY_MERGED=1
-export NOTIFY_NEWLY_ASSIGNED=1
-export NOTIFY_REREQUESTED=1
+export NOTIFY_APPROVAL_DISMISSED=1
 export NOTIFY_MENTIONED=1
+export NOTIFY_MERGED=1
+export NOTIFY_NEW_COMMENT=1
+export NOTIFY_NEW_PR=1
+export NOTIFY_NEWLY_ASSIGNED=1
+export NOTIFY_QUEUE=1
+export NOTIFY_REREQUESTED=1
 
 # Cache TTL for team members list (seconds). Default: 24 hours
 export TEAM_MEMBERS_CACHE_TTL=86400
@@ -104,6 +108,7 @@ export RAISED_BY_CONCURRENCY=12
 export ASSIGNED_TOTALS_CONCURRENCY=12
 # ⚪
 # Marks for metrics/state; customize as you like
+export APPROVAL_DISMISSED_MARK="⚪"
 export APPROVAL_MARK="✅"
 export APPROVED_BY_ME_MARK="🟢"
 export CHANGES_REQUESTED_MARK="⛔"
@@ -451,6 +456,7 @@ TMP_ALL_MENU="$(mktemp)"
   fetch_all "$TMP_ALL_MENU"
 )
 cat "$TMP_ALL_MENU" >>"$TMP_MENU"
+ALL_TOTAL=$(awk 'match($0, /^-- [^:]+: ([0-9]+)/, a){sum+=a[1]} END{print (sum+0)}' "$TMP_ALL_MENU" 2>/dev/null || echo 0)
 
 rm -f "$TMP_ALL_MENU" 2>/dev/null || true
 
@@ -463,8 +469,8 @@ for f in "$TOTAL_DIR"/*.txt; do
   TOTAL=$((TOTAL + v))
 done
 
-# Bar Title for when logged in: just an icon and the total PR count
-echo "🔀 ${TOTAL}"
+# Bar Title for when logged in: just an icon and the total PR count (All section grand total)
+echo "🔀 ${ALL_TOTAL}"
 echo "---"
 cat "$TMP_MENU"
 
@@ -586,6 +592,9 @@ else
 
     mv "$CURR_REREQ_FILE" "$STATE_REREQ_FILE" 2>/dev/null || cp "$CURR_REREQ_FILE" "$STATE_REREQ_FILE" 2>/dev/null || true
   fi
+
+  # Approval dismissed notifications (built during render)
+  notify_approval_dismissed "$CURRENT_OPEN_FILE" "$NOTIFIED_FILE" "$DISMISSED_HITS_FILE"
 
   notify_new_comments "$CURRENT_OPEN_FILE" "$NOTIFIED_FILE"
   notify_queue "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE" "$STATE_DIR"

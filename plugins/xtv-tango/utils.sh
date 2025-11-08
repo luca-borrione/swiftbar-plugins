@@ -240,6 +240,46 @@ get_my_approval_flag() {
   echo "$flag"
 }
 
+# Return my latest review state (APPROVED/CHANGES_REQUESTED/COMMENTED/DISMISSED), its timestamp, and whether I have ever approved this PR
+get_my_review_status() {
+  local repo="$1" number="$2" updatedAt="$3"
+  local cache_dir="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-my-review-v1"
+  mkdir -p "$cache_dir"
+  local key="${repo//\//_}-${number}.txt"
+  local file="$cache_dir/$key"
+
+  if [[ -s "$file" ]]; then
+    local cached_updated state ts had
+    IFS=$'\t' read -r cached_updated state ts had <"$file" || true
+    if [[ "$cached_updated" == "$updatedAt" ]]; then
+      printf "%s\t%s\t%s\n" "${state:-}" "${ts:-}" "${had:-false}"
+      return 0
+    fi
+  fi
+
+  local viewer="${MY_LOGIN:-}"
+  if [ -z "$viewer" ]; then
+    viewer=$(gh api graphql -f query='query{viewer{login}}' --jq '.data.viewer.login' 2>/dev/null || gh api user --jq '.login' 2>/dev/null || echo "")
+  fi
+
+  local out
+  out=$(gh api "repos/$repo/pulls/$number/reviews?per_page=100" 2>/dev/null | jq -r --arg me "$viewer" '
+    def low(s): s|ascii_downcase;
+    . as $arr |
+    (reduce (reverse)[] as $r (null; if .==null and low(($r.user.login // "")) == low($me) then $r else . end)) as $latest |
+    ($latest.state // "") as $state |
+    (($latest.submitted_at // $latest.submittedAt // "")) as $ts |
+    ([ $arr[] | select(low((.user.login // "")) == low($me) and .state == "APPROVED") ] | length > 0) as $had |
+    "\($state)\t\($ts)\t\($had)"
+  ' 2>/dev/null || printf "\t\tfalse\n")
+
+  local state ts had
+  IFS=$'\t' read -r state ts had <<<"$out"
+
+  printf "%s\t%s\n" "$updatedAt" "$out" >"$file.tmp" 2>/dev/null && mv "$file.tmp" "$file" 2>/dev/null || true
+  printf "%s\t%s\t%s\n" "${state:-}" "${ts:-}" "${had:-false}"
+}
+
 # Render RESP and update pagination variables
 render_and_update_pagination() {
   # Only emoji symbols can be colored; the rest of the line remains normal
@@ -389,11 +429,18 @@ render_and_update_pagination() {
           label="${NOT_PARTICIPATED_MARK:-} $label"
         fi
 
-        # If this render pass is for reviewed-by:@me, check my approval state and prepend green dot if approved
-        if [ "${CHECK_MY_APPROVAL:-0}" = "1" ]; then
-          viewer_approved=$(MY_LOGIN="$my_login" get_my_approval_flag "$repo" "$number" "$updated" 2>/dev/null)
-          if [ "$viewer_approved" = "1" ]; then
+        # When requested, check my latest review state for decoration/notification
+        if [ "${CHECK_MY_APPROVAL:-0}" = "1" ] || [ "${CHECK_MY_REVIEW_DISMISSED:-0}" = "1" ]; then
+          status=$(MY_LOGIN="$my_login" get_my_review_status "$repo" "$number" "$updated" 2>/dev/null)
+          IFS=$'\t' read -r my_state my_ts my_had_appr <<<"$status"
+          if [ "${CHECK_MY_APPROVAL:-0}" = "1" ] && [ "$my_state" = "APPROVED" ]; then
             label="${APPROVED_BY_ME_MARK:-🟢} $label"
+          fi
+          if [ "${CHECK_MY_REVIEW_DISMISSED:-0}" = "1" ] && [ "$my_state" = "DISMISSED" ]; then
+            label="${APPROVAL_DISMISSED_MARK:-⚪} $label"
+            if [ -n "${DISMISSED_HITS_FILE:-}" ] && [ -n "$my_ts" ]; then
+              printf "%s\t%s\t%s\n" "$repo" "$number" "$my_ts" >>"$DISMISSED_HITS_FILE" 2>/dev/null || true
+            fi
           fi
         fi
 
