@@ -359,8 +359,10 @@ render_and_update_pagination() {
   )
 
   # First pass: collect all non-duplicate PRs and count them by repo
-  TMP_FILTERED=$(mktemp)
-  TMP_COUNTS=$(mktemp)
+  TMP_FILTERED="$TMP_DIR/TMP_FILTERED.tsv"
+  : >"$TMP_FILTERED"
+  TMP_COUNTS="$TMP_DIR/TMP_COUNTS.tsv"
+  : >"$TMP_COUNTS"
 
   while IFS= read -r line; do
     if [[ "$line" == $'__PR__\t'* ]]; then
@@ -378,8 +380,8 @@ render_and_update_pagination() {
         continue
       fi
 
-      # Mark this PR as seen
-      if [ -n "${SEEN_PRS_FILE:-}" ]; then
+      # Mark this PR as seen (for counting across open sections); allow excluding some sections
+      if [ -n "${SEEN_PRS_FILE:-}" ] && [ "${COUNT_SEEN:-1}" = "1" ]; then
         echo "$url" >>"$SEEN_PRS_FILE"
       fi
 
@@ -395,7 +397,8 @@ render_and_update_pagination() {
   done <<<"$STREAM"
 
   # Second pass: render with corrected counts
-  TMP_OUT=$(mktemp)
+  TMP_OUT="$TMP_DIR/TMP_OUT.txt"
+  : >"$TMP_OUT"
   idx=0
   MAX_PAR="${XTV_CONC:-6}"
   SEEN_HEADER=0
@@ -528,10 +531,14 @@ render_and_update_pagination() {
           SEEN_HEADER=1
           if [[ "$orig_count" =~ ^[0-9]+$ ]] && [ "$corrected_count" -ne "$orig_count" ]; then
             echo "-- $repo_name: $corrected_count out of $orig_count |$rest"
-            ALL_TOTAL=$((ALL_TOTAL + orig_count))
+            if [ "${ACCUMULATE_ALL_TOTAL:-0}" = "1" ]; then
+              ALL_TOTAL=$((ALL_TOTAL + orig_count))
+            fi
           else
             echo "-- $repo_name: $corrected_count |$rest"
-            ALL_TOTAL=$((ALL_TOTAL + corrected_count))
+            if [ "${ACCUMULATE_ALL_TOTAL:-0}" = "1" ]; then
+              ALL_TOTAL=$((ALL_TOTAL + corrected_count))
+            fi
           fi
         fi
       else

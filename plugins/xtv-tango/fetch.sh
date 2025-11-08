@@ -109,7 +109,7 @@ fetch_all() {
 
   # Accumulate all pages of search results
   local edges_tmp
-  edges_tmp="$(mktemp)"
+  edges_tmp="$TMP_DIR/edges_tmp.jsonl"
   : >"$edges_tmp"
 
   local after=""
@@ -255,7 +255,7 @@ fetch_team_prs() {
 # Initialize indexes (unread, involves, assigned)
 init_indexes() {
   # Build index of unread PR notifications (requires notifications scope)
-  UNREAD_FILE="$(mktemp)"
+  UNREAD_FILE="$TMP_DIR/UNREAD_FILE.tsv"
   if ! gh api -H "Accept: application/vnd.github+json" 'notifications?per_page=100' \
     --jq '.[] | select(.unread == true and .subject.type == "PullRequest") | [.repository.full_name, (.subject.url | sub(".*/pulls/"; ""))] | @tsv' \
     >"$UNREAD_FILE" 2>/dev/null; then
@@ -263,7 +263,7 @@ init_indexes() {
   fi
 
   # Build index of PRs I have participated in (involves:@me). Limit to 100 for speed.
-  INVOLVES_FILE="$(mktemp)"
+  INVOLVES_FILE="$TMP_DIR/INVOLVES_FILE.tsv"
   local repo_q
   repo_q=$(build_repo_qualifier)
   if ! gh api graphql -F q="is:pr is:open involves:@me${repo_q}" -F n="100" -f query='
@@ -278,6 +278,6 @@ init_indexes() {
   fi
 
   # Index of PRs already listed in ASSIGNED_TO_TEAMS (repo\tnumber)
-  ASSIGNED_FILE="$(mktemp)"
+  ASSIGNED_FILE="$TMP_DIR/ASSIGNED_FILE.tsv"
   : >"$ASSIGNED_FILE"
 }
