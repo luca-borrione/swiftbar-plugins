@@ -32,12 +32,15 @@ render_and_update_pagination() {
       --arg hdrLink "$HEADER_LINK_Q" \
       --arg hdrLinkKind "${HEADER_LINK_KIND:-pulls}" \
       --arg myLogin "$my_login" \
+      --arg filterReact "${FILTER_VIEWER_REACTED_ONLY:-false}" \
       --arg filterIndividual "${FILTER_INDIVIDUAL_REVIEWS:-false}" '
     [ ((.data.search.edges // [])[] | .node)
       | {repo: .repository.nameWithOwner, number, title, url, isDraft, isInMergeQueue, updatedAt,
           author: (.author.login // "unknown"),
           avatar: (.author.avatarUrl // ""),
           comments: ((.comments.totalCount // 0) + (((.reviewThreads.nodes // []) | map(.comments.totalCount // 0) | add) // 0)),
+      # viewerReacted comes from GraphQL reactionGroups.viewerHasReacted and
+      # indicates whether the viewer reacted to the PR BODY (not comment reactions).
           reviewDecision: (.reviewDecision // ""),
           viewerReacted: (((.reactionGroups // []) | map(.viewerHasReacted) | any) // false),
           reviewRequests: (.reviewRequests.nodes // [])
@@ -51,6 +54,7 @@ render_and_update_pagination() {
         else
           .
         end
+      | if $filterReact == "true" then select(.viewerReacted == true) else . end
       | .title |= (
           (. // "") | gsub("\r";"") | gsub("\n";" ")
           | gsub("\\|";"¦")
@@ -92,6 +96,8 @@ render_and_update_pagination() {
     if [[ "$line" == $'__PR__\t'* ]]; then
       IFS=$'\t' read -r _ login avatar url repo number updated comments title in_queue review_decision viewer_reacted <<<"$line"
 
+      # Debug: log parsed PR line before dedupe
+
       # Mentioned section: collect for notifications when enabled (capture before dedup)
       if [ "${MENTION_CAPTURE:-0}" = "1" ]; then
         if [ -n "${MENTIONED_CURR_FILE:-}" ]; then
@@ -101,22 +107,30 @@ render_and_update_pagination() {
 
       # Skip if this PR has already been displayed in a previous section
       if [ -n "${SEEN_PRS_FILE:-}" ] && [ -f "$SEEN_PRS_FILE" ] && grep -q -F -x "$url" "$SEEN_PRS_FILE" 2>/dev/null; then
+
         continue
       fi
 
       # Mark this PR as seen (for counting across open sections); allow excluding some sections
       if [ -n "${SEEN_PRS_FILE:-}" ] && [ "${COUNT_SEEN:-1}" = "1" ]; then
         echo "$url" >>"$SEEN_PRS_FILE"
+
       fi
 
       # Track count for this repo (using a file instead of associative array for Bash 3.2 compatibility)
       echo "$repo" >>"$TMP_COUNTS"
 
+      # Debug: count per repo
+
       # Save the line for second pass
       echo "$line" >>"$TMP_FILTERED"
     else
-      # Save non-PR lines (headers, separators)
-      echo "$line" >>"$TMP_FILTERED"
+      # Save non-PR lines (headers, separators) unless we're suppressing headers for this pass
+      if [ "${RENDER_NO_HEADERS:-0}" = "1" ]; then
+        : # skip
+      else
+        echo "$line" >>"$TMP_FILTERED"
+      fi
     fi
   done <<<"$STREAM"
 
@@ -145,9 +159,10 @@ render_and_update_pagination() {
         suffix=""
         if ((conv > 0)); then suffix+="  ${COMMENT_MARK:-}${conv}"; fi
         if ((appr > 0)); then suffix+="  ${APPROVAL_MARK:-}${appr}"; fi
+
         # key for lookups
         needle="$repo"$'\t'"$number"
-        # not participated yet (no involves:@me and no reaction on PR body)
+        # not participated yet (no commenter:@me and no reaction on PR body)
         participated=0
         if [ -s "$INVOLVES_FILE" ] && grep -x -F -- "$needle" "$INVOLVES_FILE" >/dev/null 2>&1; then
           participated=1

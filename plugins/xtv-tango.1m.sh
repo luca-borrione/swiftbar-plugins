@@ -97,7 +97,7 @@ export REPO_HEADER_FONT="Helvetica-Bold" # bold header font (use a font installe
 export REPO_HEADER_SIZE="13"             # header font size
 
 # Section visibility knobs (1=show, 0=hide)
-SHOW_ALL_SECTION=0
+SHOW_ALL_SECTION=1
 SHOW_MENTIONED_SECTION=1
 SHOW_PARTICIPATED_SECTION=1
 SHOW_RAISED_BY_ME_SECTION=1

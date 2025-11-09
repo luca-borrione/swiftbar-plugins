@@ -212,26 +212,65 @@ fetch_mentioned() {
   fetch_and_render_prs "$q_mentions" "is:pr is:open mentions:@me${AUTHOR_EXCL}" "$output_file"
 }
 
-# Fetch PRs I participated in (any involvement: comments, reviews, mentions, or reviews incl. dismissed)
+# -----------------------------------------------------------------------------
+# Participated section
+#
+# What is included
+# - Your comments on the PR (top-level)
+# - You review (approve/changes required/comments)
+# - You react to the PR body (thumbs up, etc.)
+#
+# What is NOT included
+# -Reactions to COMMENTS are NOT counted (GitHub’s viewerHasReacted exposes
+#   reactions only for the PR body in this context)
+# - Mentions (mentions:@me) are NOT included — they’re passive, not your action
+# -----------------------------------------------------------------------------
+
+# Fetch PRs I participated in (my activity only: comments/reviews via commenter:@me, plus PR-body reactions)
+# Header link reflects commenter:@me only; reactions are merged client-side via viewerHasReacted
 fetch_participated() {
   local output_file="$1"
 
   local repo_q
   repo_q=$(build_repo_qualifier)
-  local q_involves="is:pr is:open involves:@me${AUTHOR_EXCL}${repo_q}"
-  local q_reviewed="is:pr is:open reviewed-by:@me${AUTHOR_EXCL}${repo_q}"
 
-  # Run reviewed-by first so approved PRs get decorated before dedupe, then involves
+  # Queries
+  local q_commenter="is:pr is:open commenter:@me${AUTHOR_EXCL}${repo_q}"
+  local q_reacted="is:pr is:open reactions:>=1${AUTHOR_EXCL}${repo_q}"
+
+  # Fetch both result sets (same GraphQL selection as other sections)
+  local empty='{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}'
+  local J1 J2
+  J1=$(gh api graphql -F q="$q_commenter" -F n="100" -f query='
+    query($q:String!,$n:Int!){
+      search(query:$q,type:ISSUE,first:$n){
+        pageInfo{hasNextPage endCursor}
+        edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads(first:100){nodes{comments{totalCount}}} reviewRequests(first:100){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}}}}
+    }}' 2>/dev/null) || J1="$empty"
+  J2=$(gh api graphql -F q="$q_reacted" -F n="100" -f query='
+    query($q:String!,$n:Int!){
+      search(query:$q,type:ISSUE,first:$n){
+        pageInfo{hasNextPage endCursor}
+        edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads(first:100){nodes{comments{totalCount}}} reviewRequests(first:100){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}}}}
+    }}' 2>/dev/null) || J2="$empty"
+
+  # Combine and keep only reaction-only items where viewerHasReacted==true; then unique by repo+number
+  RESP=$(jq -s '{data:{search:{edges:((.[0].data.search.edges // [])
+          + ((.[1].data.search.edges // [])
+             | map(select(((.node.reactionGroups // []) | map(.viewerHasReacted) | any) == true))
+            )), pageInfo:{hasNextPage:false,endCursor:null}}}}
+        | .data.search.edges |= unique_by(.node.repository.nameWithOwner + "#" + (.node.number|tostring))' \
+    <(echo "${J1:-$empty}") <(echo "${J2:-$empty}") 2>/dev/null || echo "$empty")
+
+  # Decorations apply to the unified set
   export CHECK_MY_REVIEW_DISMISSED="1"
   export CHECK_MY_APPROVAL="1"
-  fetch_and_render_prs "$q_reviewed" "is:pr is:open reviewed-by:@me${AUTHOR_EXCL}" "$output_file"
-  # Ensure a visual gap between the reviewed-by and involves blocks
-  if [ -s "$output_file" ]; then echo "--" >>"$output_file"; fi
-  export CHECK_MY_APPROVAL="0"
-  export CHECK_MY_REVIEW_DISMISSED="1"
-  fetch_and_render_prs "$q_involves" "is:pr is:open involves:@me${AUTHOR_EXCL}" "$output_file"
+  export HEADER_LINK_Q="is:pr is:open commenter:@me${AUTHOR_EXCL}"
+  render_and_update_pagination >>"$output_file"
+
   # Reset flags
   export CHECK_MY_REVIEW_DISMISSED="0"
+  export CHECK_MY_APPROVAL="0"
 }
 
 # Fetch PRs for a specific team (team review requests only)
@@ -259,11 +298,11 @@ init_indexes() {
     : >"$UNREAD_FILE"
   fi
 
-  # Build index of PRs I have participated in (involves:@me). Limit to 100 for speed.
+  # Build index of PRs I have actively participated in (commenter:@me). Limit to 100 for speed.
   INVOLVES_FILE="$TMP_DIR/INVOLVES_FILE.tsv"
   local repo_q
   repo_q=$(build_repo_qualifier)
-  if ! gh api graphql -F q="is:pr is:open involves:@me${repo_q}" -F n="100" -f query='
+  if ! gh api graphql -F q="is:pr is:open commenter:@me${repo_q}" -F n="100" -f query='
     query($q:String!,$n:Int!){
       search(query:$q,type:ISSUE,first:$n){
         edges{node{... on PullRequest{ number repository{nameWithOwner} }}}
