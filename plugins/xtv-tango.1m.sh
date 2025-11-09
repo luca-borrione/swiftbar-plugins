@@ -551,7 +551,7 @@ touch "$NOTIFIED_FILE"
 # Temporarily relax -e for notifications to avoid SwiftBar error panel on intermittent API issues
 set +e
 
-# CURRENT_OPEN_FILE contains: repo\tnumber\ttitle\turl\tconv\tin_queue\trequested_in_team\tcomment_id\tcomment_author\tcomment_body\tdirect_to_me
+# CURRENT_OPEN_FILE contains: repo\tnumber\ttitle\turl\tconv\tin_queue\trequested_in_team\tcomment_id\tcomment_author\tcomment_body\tdirect_to_me\tauthor_login
 if [ ! -s "$STATE_FILE" ]; then
   # Prime state on first run; avoid spamming notifications
   cp "$CURRENT_OPEN_FILE" "$STATE_FILE" 2>/dev/null || true

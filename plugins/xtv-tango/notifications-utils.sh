@@ -26,10 +26,12 @@ notify_new_prs() {
       # Lookup full row in CURRENT_OPEN_FILE
       row=$(awk -F'\t' -v r="$repo" -v n="$num" '$1==r && $2==n {print; exit}' "$current_file")
       [ -z "$row" ] && continue
-      title=$(echo "$row" | cut -f3)
+      title=$(echo "$row" | cut -f3 | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
       url=$(echo "$row" | cut -f4)
-      gid="xtv-pr-${repo//\//-}-${num}"
-      notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "New PR" -subtitle "$repo #$num" -message "$title" -open "$url" -sound default
+      author=$(echo "$row" | awk -F'\t' '{print $NF}')
+      [ -z "$author" ] && author="unknown"
+      gid="xtv-pr-new-${repo//\//-}-${num}"
+      notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "New PR by $author" -subtitle "$repo #$num" -message "$title" -open "$url" -sound default
       echo "$notif_key" >>"$notified_file"
     done
 }
@@ -194,7 +196,7 @@ notify_new_comments() {
 
   [ "${NOTIFY_NEW_COMMENT:-1}" != "1" ] && return 0
 
-  while IFS=$'\t' read -r repo num title url conv in_queue _requested_in_team comment_id author body; do
+  while IFS=$'\t' read -r repo num title url conv in_queue _requested_in_team comment_id author body _requested_me_flag _pr_author; do
     pr_key="${repo}#${num}"
 
     # Skip if no comment data
@@ -272,9 +274,13 @@ notify_merged() {
       # Verify it was merged (not just closed)
       state=$(gh api "repos/$repo/pulls/$num" --jq '.state + ":" + (.merged_at // "null")' 2>/dev/null || echo "unknown:null")
       if [[ "$state" == closed:* ]] && [[ "$state" != *:null ]]; then
-        title=$(gh api "repos/$repo/pulls/$num" --jq '.title' 2>/dev/null || echo "PR #$num")
+        # Fetch and sanitize title to a single line; escape quotes for notify
+        title_raw=$(gh api "repos/$repo/pulls/$num" --jq '.title' 2>/dev/null || true)
+        if [ -z "$title_raw" ]; then title_raw="PR #$num"; fi
+        title=$(echo "$title_raw" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
         url="https://github.com/$repo/pull/$num"
-        gid="xtv-pr-${repo//\//-}-${num}"
+        # Use an event-specific group to avoid stacking with other events
+        gid="xtv-pr-merged-${repo//\//-}-${num}"
         notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "PR Merged" -subtitle "$repo #$num" -message "$title" -open "$url" -sound default
         echo "$notif_key" >>"$notified_file"
       fi
@@ -290,14 +296,8 @@ notify_mentions() {
 
   [ "${NOTIFY_MENTIONED:-1}" != "1" ] && return 0
 
-  # Prime previous if missing and skip notifications to avoid first-run spam
+  # If previous file is missing, skip (first run)
   if [ ! -f "$prev_mentions_file" ]; then
-    # If current list exists, seed prev with it; otherwise create empty prev
-    if [ -n "${curr_mentions_file:-}" ] && [ -f "$curr_mentions_file" ]; then
-      cp "$curr_mentions_file" "$prev_mentions_file" 2>/dev/null || : >"$prev_mentions_file"
-    else
-      : >"$prev_mentions_file"
-    fi
     return 0
   fi
 

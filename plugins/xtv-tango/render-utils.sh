@@ -208,7 +208,8 @@ render_and_update_pagination() {
           clean_comment_id=$(echo "$comment_id" | tr '\t\n\r' '   ')
           clean_comment_author=$(echo "$comment_author" | tr '\t\n\r' '   ')
           clean_comment_body=$(echo "$comment_body" | tr '\t\n\r' '   ')
-          printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$repo" "$number" "$clean_title" "$url" "$conv" "$in_queue" "$requested_flag" "$clean_comment_id" "$clean_comment_author" "$clean_comment_body" "$requested_me_flag" >>"$CURRENT_OPEN_FILE"
+          # Append author login as final column for notification context
+          printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$repo" "$number" "$clean_title" "$url" "$conv" "$in_queue" "$requested_flag" "$clean_comment_id" "$clean_comment_author" "$clean_comment_body" "$requested_me_flag" "$login" >>"$CURRENT_OPEN_FILE"
         fi
 
         if [[ -n "$b64" ]]; then
