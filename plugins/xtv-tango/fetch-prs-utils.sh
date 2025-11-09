@@ -7,16 +7,14 @@
 # ============================================================================
 
 # Fetch PRs (single page, no pagination) and render to output file
-# Args: query, header_link_query, collect_assigned_flag, output_file
+# Args: query, header_link_query, collect_team_flag, output_file
 fetch_and_render_prs() {
   local query="$1"
   local header_link_q="$2"
-  local collect_assigned="$3"
-  local output_file="$4"
+  local output_file="$3"
 
   # Set global variables for render function
   export HEADER_LINK_Q="$header_link_q"
-  export COLLECT_ASSIGNED="$collect_assigned"
 
   # Single GraphQL search call (no pagination). Max 100 items per GitHub API.
   RESP=$(gh api graphql -F q="$query" -F n="100" -f query='
@@ -37,19 +35,20 @@ build_repo_qualifier() {
   echo "$repo_q"
 }
 
-# Fetch "Assigned to Me" PRs (assignee:@me)
-fetch_assigned_to_me() {
+# Fetch "Requested to Me" PRs (direct review requests only)
+fetch_requested_to_me() {
   local output_file="$1"
 
   local repo_q
   repo_q=$(build_repo_qualifier)
-  local query
-  query="is:pr is:open assignee:@me${repo_q}"
 
-  # Record direct assignments for notifications during rendering
-  export COLLECT_ASSIGNED_ME="1"
-  fetch_and_render_prs "$query" "is:pr is:open assignee:@me" 0 "$output_file"
-  export COLLECT_ASSIGNED_ME="0"
+  export COLLECT_REQUESTED_TO_ME="1"
+  # Direct-to-you review requests only (includes PRs also requested to your teams)
+  export FILTER_INDIVIDUAL_REVIEWS="false"
+  local query="is:pr is:open user-review-requested:@me${repo_q}"
+  local header_link="is:pr is:open user-review-requested:@me"
+  fetch_and_render_prs "$query" "$header_link" "$output_file"
+  export COLLECT_REQUESTED_TO_ME="0"
 }
 
 # Fetch "Raised by Me" PRs
@@ -58,10 +57,9 @@ fetch_raised_by_me() {
 
   local repo_q
   repo_q=$(build_repo_qualifier)
-  local query
-  query="is:pr is:open author:@me${repo_q}"
+  local query="is:pr is:open author:@me${repo_q}"
 
-  fetch_and_render_prs "$query" "is:pr is:open author:@me" 0 "$output_file"
+  fetch_and_render_prs "$query" "is:pr is:open author:@me" "$output_file"
 }
 
 # Fetch "Recently Merged" PRs (authored by me, merged in the last N days)
@@ -87,10 +85,8 @@ fetch_recently_merged() {
     fi
   fi
 
-  local query
-  query="is:pr is:merged author:@me${merged_q}${repo_q}"
-
-  fetch_and_render_prs "$query" "is:pr is:merged author:@me" 0 "$output_file"
+  local query="is:pr is:merged author:@me${merged_q}${repo_q}"
+  fetch_and_render_prs "$query" "is:pr is:merged author:@me" "$output_file"
 }
 
 # Fetch all open PRs across watched repos (paginate until the very beginning)
@@ -105,7 +101,6 @@ fetch_all() {
 
   # We want the repo headers to link to the repo pulls search for open PRs
   export HEADER_LINK_Q="is:pr is:open"
-  export COLLECT_ASSIGNED="0"
 
   # Accumulate all pages of search results
   local edges_tmp
@@ -214,7 +209,7 @@ fetch_mentioned() {
   # Primary: direct mentions (exclude my authored PRs)
   local q_mentions
   q_mentions="is:pr is:open mentions:@me${AUTHOR_EXCL}${repo_q}"
-  fetch_and_render_prs "$q_mentions" "is:pr is:open mentions:@me${AUTHOR_EXCL}" 0 "$output_file"
+  fetch_and_render_prs "$q_mentions" "is:pr is:open mentions:@me${AUTHOR_EXCL}" "$output_file"
 }
 
 # Fetch PRs I participated in (any involvement: comments, reviews, mentions, or reviews incl. dismissed)
@@ -229,17 +224,17 @@ fetch_participated() {
   # Run reviewed-by first so approved PRs get decorated before dedupe, then involves
   export CHECK_MY_REVIEW_DISMISSED="1"
   export CHECK_MY_APPROVAL="1"
-  fetch_and_render_prs "$q_reviewed" "is:pr is:open reviewed-by:@me${AUTHOR_EXCL}" 0 "$output_file"
+  fetch_and_render_prs "$q_reviewed" "is:pr is:open reviewed-by:@me${AUTHOR_EXCL}" "$output_file"
   # Ensure a visual gap between the reviewed-by and involves blocks
   if [ -s "$output_file" ]; then echo "--" >>"$output_file"; fi
   export CHECK_MY_APPROVAL="0"
   export CHECK_MY_REVIEW_DISMISSED="1"
-  fetch_and_render_prs "$q_involves" "is:pr is:open involves:@me${AUTHOR_EXCL}" 0 "$output_file"
+  fetch_and_render_prs "$q_involves" "is:pr is:open involves:@me${AUTHOR_EXCL}" "$output_file"
   # Reset flags
   export CHECK_MY_REVIEW_DISMISSED="0"
 }
 
-# Fetch PRs for a specific team
+# Fetch PRs for a specific team (team review requests only)
 fetch_team_prs() {
   local team_slug="$1"
   local output_file="$2"
@@ -248,11 +243,13 @@ fetch_team_prs() {
   repo_q=$(build_repo_qualifier)
   local query
   query="is:pr is:open team-review-requested:${team_slug}${repo_q}"
-
-  fetch_and_render_prs "$query" "is:pr is:open team-review-requested:${team_slug}" 1 "$output_file"
+  # Mark rows as belonging to the team section (used for state/notifications)
+  export COLLECT_REQUESTED_TO_TEAM="1"
+  fetch_and_render_prs "$query" "is:pr is:open team-review-requested:${team_slug}" "$output_file"
+  export COLLECT_REQUESTED_TO_TEAM="0"
 }
 
-# Initialize indexes (unread, involves, assigned)
+# Initialize indexes (unread, involves, requested)
 init_indexes() {
   # Build index of unread PR notifications (requires notifications scope)
   UNREAD_FILE="$TMP_DIR/UNREAD_FILE.tsv"
@@ -277,7 +274,7 @@ init_indexes() {
     : >"$INVOLVES_FILE"
   fi
 
-  # Index of PRs already listed in ASSIGNED_TO_TEAMS (repo\tnumber)
-  ASSIGNED_FILE="$TMP_DIR/ASSIGNED_FILE.tsv"
-  : >"$ASSIGNED_FILE"
+  # Index of PRs already listed in REQUESTED_TO_TEAMS (repo\tnumber)
+  REQUESTED_FILE="$TMP_DIR/REQUESTED_FILE.tsv"
+  : >"$REQUESTED_FILE"
 }

@@ -20,7 +20,7 @@ set -euo pipefail
 # - jq [required]: JSON processing for GraphQL responses.
 #   Install: brew install jq
 #
-# - terminal-notifier [optional]: sends macOS notifications for new team‑assigned PRs.
+# - terminal-notifier [optional]: sends macOS notifications.
 #   Install: brew install terminal-notifier
 #
 # - curl [required]: downloads user avatars. Preinstalled on macOS.
@@ -98,13 +98,13 @@ export REPO_HEADER_SIZE="13"             # header font size
 
 # Section visibility knobs (1=show, 0=hide)
 SHOW_ALL_SECTION=0
-SHOW_ASSIGNED_TO_ME_SECTION=1
-# SHOW_ASSIGNED_TO_TEAMS_SECTION will be derived from the content of ASSIGNED_TO_TEAMS
 SHOW_MENTIONED_SECTION=1
 SHOW_PARTICIPATED_SECTION=1
 SHOW_RAISED_BY_ME_SECTION=1
 # SHOW_RAISED_BY_TEAMS_SECTION will be derived from the content of RAISED_BY_TEAMS
 SHOW_RECENTLY_MERGED_SECTION=1
+SHOW_REQUESTED_TO_ME_SECTION=1
+# SHOW_REQUESTED_TO_TEAMS_SECTION will be derived from the content of REQUESTED_TO_TEAMS
 
 # Section configuration
 RECENTLY_MERGED_DAYS=7
@@ -115,7 +115,7 @@ export NOTIFY_MENTIONED=1
 export NOTIFY_MERGED=1
 export NOTIFY_NEW_COMMENT=1
 export NOTIFY_NEW_PR=1
-export NOTIFY_NEWLY_ASSIGNED=1
+export NOTIFY_NEWLY_REQUESTED=1
 export NOTIFY_QUEUE=1
 export NOTIFY_REREQUESTED=1
 
@@ -124,8 +124,8 @@ export TEAM_MEMBERS_CACHE_TTL=86400
 
 # Concurrency for "Raised by" per-author fetch (parallel gh calls); must be a positive integer
 export RAISED_BY_CONCURRENCY=12
-# Concurrency for "Assigned to" totals-count across teams; must be a positive integer
-export ASSIGNED_TOTALS_CONCURRENCY=12
+# Concurrency for "Requested to" totals-count across teams; must be a positive integer
+export REQUESTEDCONCURRENCY=12
 
 # Marks for metrics/state; customize as you like
 export APPROVAL_DISMISSED_MARK="⚪"
@@ -141,7 +141,7 @@ export UNREAD_MARK="🔺"
 
 # Teams configuration: one org/team slug per line
 # NBCUDTC/xtv-devs
-ASSIGNED_TO_TEAMS="
+REQUESTED_TO_TEAMS="
 NBCUDTC/xtv-tango
 NBCUDTC/gst-apps-client-lib-steering-committee
 "
@@ -180,18 +180,18 @@ if [ "${SHOW_RAISED_BY_ME_SECTION:-0}" = "1" ]; then AUTHOR_EXCL=" -author:@me";
 export AUTHOR_EXCL
 
 # Parse into array (trim whitespace, drop empty lines) - compatible with older bash
-ASSIGNED_TO_TEAMS_ARRAY=()
+REQUESTED_TO_TEAMS_ARRAY=()
 while IFS= read -r line; do
   line=$(printf "%s" "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
   [ -z "$line" ] && continue
-  ASSIGNED_TO_TEAMS_ARRAY+=("$line")
-done <<<"$ASSIGNED_TO_TEAMS"
+  REQUESTED_TO_TEAMS_ARRAY+=("$line")
+done <<<"$REQUESTED_TO_TEAMS"
 
 # Derived visibility flag for clarity
-if [ "${#ASSIGNED_TO_TEAMS_ARRAY[@]}" -gt 0 ]; then
-  SHOW_ASSIGNED_TO_TEAMS_SECTION=1
+if [ "${#REQUESTED_TO_TEAMS_ARRAY[@]}" -gt 0 ]; then
+  SHOW_REQUESTED_TO_TEAMS_SECTION=1
 else
-  SHOW_ASSIGNED_TO_TEAMS_SECTION=0
+  SHOW_REQUESTED_TO_TEAMS_SECTION=0
 fi
 
 RAISED_BY_TEAMS_ARRAY=()
@@ -243,8 +243,6 @@ init_indexes
 
 # Header link query string for repo header href (URL-encoded)
 HEADER_LINK_Q=""
-# Flags used by renderer
-COLLECT_ASSIGNED=0
 
 # Start: buffer for the per-team menu and compute totals across teams
 TMP_MENU="$TMP_DIR/TMP_MENU.txt"
@@ -257,8 +255,8 @@ export SEEN_PRS_FILE
 # Count seen PRs across open sections for menubar when All is hidden
 COUNT_SEEN=1
 
-ASSIGNED_MAX_PAR="${ASSIGNED_TOTALS_CONCURRENCY:-8}"
-if ! [[ "$ASSIGNED_MAX_PAR" =~ ^[1-9][0-9]*$ ]]; then ASSIGNED_MAX_PAR=8; fi
+requested_MAX_PAR="${REQUESTEDCONCURRENCY:-8}"
+if ! [[ "$requested_MAX_PAR" =~ ^[1-9][0-9]*$ ]]; then requested_MAX_PAR=8; fi
 
 # Personal sections before team sections
 # 0.a Raised by Me (my authored PRs)
@@ -297,7 +295,23 @@ if [ "${SHOW_MENTIONED_SECTION:-0}" = "1" ]; then
   rm -f "$TMP_MENTIONED_MENU" 2>/dev/null || true
 fi
 
-# 0.c Participated (any involvement on open PRs)
+# 0.c Requested to Me (review-requested:@me)
+if [ "${SHOW_REQUESTED_TO_ME_SECTION:-0}" = "1" ]; then
+  TMP_ME_MENU="$TMP_DIR/TMP_ME_MENU.txt"
+  : >"$TMP_ME_MENU"
+  fetch_requested_to_me "$TMP_ME_MENU"
+  SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_ME_MENU" | awk '{s+=$1} END{print s+0}')
+  [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
+  if [ "$SECTION_COUNT" -gt 0 ]; then
+    echo "Requested to Me: ${SECTION_COUNT}" >>"$TMP_MENU"
+  else
+    echo "Requested to Me" >>"$TMP_MENU"
+  fi
+  cat "$TMP_ME_MENU" >>"$TMP_MENU"
+  rm -f "$TMP_ME_MENU" 2>/dev/null || true
+fi
+
+# 0.d Participated (any involvement on open PRs)
 if [ "${SHOW_PARTICIPATED_SECTION:-0}" = "1" ]; then
   TMP_PART_MENU="$TMP_DIR/TMP_PART_MENU.txt"
   : >"$TMP_PART_MENU"
@@ -311,22 +325,6 @@ if [ "${SHOW_PARTICIPATED_SECTION:-0}" = "1" ]; then
   fi
   cat "$TMP_PART_MENU" >>"$TMP_MENU"
   rm -f "$TMP_PART_MENU" 2>/dev/null || true
-fi
-
-# 0.d Assigned to Me (review requested to me)
-if [ "${SHOW_ASSIGNED_TO_ME_SECTION:-0}" = "1" ]; then
-  TMP_ME_MENU="$TMP_DIR/TMP_ME_MENU.txt"
-  : >"$TMP_ME_MENU"
-  fetch_assigned_to_me "$TMP_ME_MENU"
-  SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_ME_MENU" | awk '{s+=$1} END{print s+0}')
-  [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
-  if [ "$SECTION_COUNT" -gt 0 ]; then
-    echo "Assigned to Me: ${SECTION_COUNT}" >>"$TMP_MENU"
-  else
-    echo "Assigned to Me" >>"$TMP_MENU"
-  fi
-  cat "$TMP_ME_MENU" >>"$TMP_MENU"
-  rm -f "$TMP_ME_MENU" 2>/dev/null || true
 fi
 
 # 0.e Recently Merged (my recently merged PRs)
@@ -347,29 +345,28 @@ if [ "${SHOW_RECENTLY_MERGED_SECTION:-0}" = "1" ] &&
 fi
 
 # Separator between personal sections and team sections
-if { [ "${SHOW_ASSIGNED_TO_TEAMS_SECTION:-0}" = "1" ]; } || { [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; }; then
+if { [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; } || { [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; }; then
   # Team sections
   echo "---" >>"$TMP_MENU"
 fi
 
-if [ "${SHOW_ASSIGNED_TO_TEAMS_SECTION:-0}" = "1" ]; then
-  echo "Assigned to" >>"$TMP_MENU"
+if [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; then
+  echo "Requested to" >>"$TMP_MENU"
 fi
 
-if [ "${SHOW_ASSIGNED_TO_TEAMS_SECTION:-0}" = "1" ]; then
+if [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; then
   TP_COUNT=0
   # Run total counts concurrently across all configured teams
   TOTAL_DIR="$TMP_DIR/TOTAL_DIR"
   rm -rf "$TOTAL_DIR" 2>/dev/null || true
   mkdir -p "$TOTAL_DIR"
   TOTAL_PIDS=()
-  for team in "${ASSIGNED_TO_TEAMS_ARRAY[@]}"; do
+  for team in "${REQUESTED_TO_TEAMS_ARRAY[@]}"; do
     REPO_Q=$(build_repo_qualifier)
-    COLLECT_ASSIGNED=1
     q="is:pr is:open team-review-requested:${team}${REPO_Q}"
     f="$TOTAL_DIR/${team//\//_}.txt"
     TP_COUNT=$((TP_COUNT + 1))
-    if [ $((TP_COUNT % ASSIGNED_MAX_PAR)) -eq 0 ]; then
+    if [ $((TP_COUNT % requested_MAX_PAR)) -eq 0 ]; then
       for pid in "${TOTAL_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done
       TOTAL_PIDS=()
     fi
@@ -378,11 +375,11 @@ if [ "${SHOW_ASSIGNED_TO_TEAMS_SECTION:-0}" = "1" ]; then
   done
 fi
 
-if [ "${SHOW_ASSIGNED_TO_TEAMS_SECTION:-0}" = "1" ]; then
+if [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; then
   # 2.
   # Show the list of PRs per configured team
   N=50
-  for team in "${ASSIGNED_TO_TEAMS_ARRAY[@]}"; do
+  for team in "${REQUESTED_TO_TEAMS_ARRAY[@]}"; do
     team_name="${team#*/}"
     TMP_TEAM_MENU="$TMP_DIR/TMP_TEAM_MENU.txt"
     : >"$TMP_TEAM_MENU"
@@ -476,13 +473,13 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
     fi
     rm -rf "$RB_DIR" 2>/dev/null || true
 
-    # Build synthetic RESP excluding PRs already listed under ASSIGNED_TO_TEAMS
+    # Build synthetic RESP excluding PRs already listed under REQUESTED_TO_TEAMS
     if [ -s "$RB_NODES_FILE" ]; then
-      RESP=$(jq -s --rawfile assigned "$ASSIGNED_FILE" '
+      RESP=$(jq -s --rawfile requested "$REQUESTED_FILE" '
         unique_by(.repository.nameWithOwner + "#" + (.number|tostring))
         | map(
             . as $n
-            | select( ($n.repository.nameWithOwner + "\t" + ($n.number|tostring)) as $k | ($assigned | split("\n") | index($k) | not))
+            | select( ($n.repository.nameWithOwner + "\t" + ($n.number|tostring)) as $k | ($requested | split("\n") | index($k) | not))
           )
 
         | {data:{search:{edges:(map({node:.})), pageInfo:{hasNextPage:false, endCursor:null}}}}' "$RB_NODES_FILE" 2>/dev/null ||
@@ -497,7 +494,6 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
       HEADER_LINK_Q="is:pr is:open"
     fi
     HEADER_LINK_KIND="search"
-    COLLECT_ASSIGNED=0
     render_and_update_pagination >>"$TMP_TEAM_MENU"
     unset HEADER_LINK_KIND
 
@@ -558,10 +554,10 @@ echo "---"
 cat "$TMP_MENU"
 
 # Cleanup temp files (menu buffers)
-rm -f "$TMP_MENU" "$UNREAD_FILE" "$ASSIGNED_FILE" "$INVOLVES_FILE" 2>/dev/null || true
+rm -f "$TMP_MENU" "$UNREAD_FILE" "$REQUESTED_FILE" "$INVOLVES_FILE" 2>/dev/null || true
 rm -rf "$TOTAL_DIR" 2>/dev/null || true
 
-# 3. Notifications across all sections (assigned + raised-by)
+# 3. Notifications across all sections (requested + raised-by)
 STATE_DIR="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}"
 STATE_FILE="$STATE_DIR/xtv-tango.state.tsv"
 NOTIFIED_FILE="$STATE_DIR/xtv-tango.notified.tsv"
@@ -571,7 +567,7 @@ touch "$NOTIFIED_FILE"
 # Temporarily relax -e for notifications to avoid SwiftBar error panel on intermittent API issues
 set +e
 
-# CURRENT_OPEN_FILE contains: repo\tnumber\ttitle\turl\tconv\tin_queue\tassigned_in_team\tcomment_id\tcomment_author\tcomment_body
+# CURRENT_OPEN_FILE contains: repo\tnumber\ttitle\turl\tconv\tin_queue\trequested_in_team\tcomment_id\tcomment_author\tcomment_body\tdirect_to_me
 if [ ! -s "$STATE_FILE" ]; then
   # Prime state on first run; avoid spamming notifications
   cp "$CURRENT_OPEN_FILE" "$STATE_FILE" 2>/dev/null || true
@@ -582,7 +578,7 @@ else
 
   # Call notification functions
   notify_new_prs "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE"
-  notify_newly_assigned "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE" "$STATE_DIR"
+  notify_newly_requested "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE" "$STATE_DIR"
   # Mentions: compare current vs previous Mentioned list and notify on new entries
   if [ -n "${MENTIONED_CURR_FILE:-}" ]; then
     STATE_MENTION_FILE="${STATE_DIR}/xtv-tango.mention.state.tsv"
@@ -590,7 +586,7 @@ else
   fi
 
   # Re-requested review (more complex, kept inline for now)
-  # Re-requested review to your team (fires even if already assigned)
+  # Re-requested review to your team (fires even if already requested)
   if [ "${NOTIFY_REREQUESTED:-1}" = "1" ]; then
     STATE_REREQ_FILE="${STATE_DIR}/xtv-tango.rerequest.state.tsv"
     CURR_REREQ_FILE="${STATE_DIR}/xtv-tango.rerequest.curr.tsv"
@@ -605,13 +601,13 @@ else
     fi
 
     # Build teams JSON array for jq membership check
-    ASSIGNED_JSON="["
-    for t in "${ASSIGNED_TO_TEAMS_ARRAY[@]}"; do ASSIGNED_JSON+="\"$t\","; done
-    ASSIGNED_JSON="${ASSIGNED_JSON%,}]"
+    requested_JSON="["
+    for t in "${REQUESTED_TO_TEAMS_ARRAY[@]}"; do requested_JSON+="\"$t\","; done
+    requested_JSON="${requested_JSON%,}]"
 
-    # For each current PR assigned to team, fetch latest team ReviewRequestedEvent timestamp
-    while IFS=$'\t' read -r repo num title url conv in_queue assigned_in_team; do
-      [ "$assigned_in_team" = "1" ] || continue
+    # For each current PR requested to team, fetch latest team ReviewRequestedEvent timestamp
+    while IFS=$'\t' read -r repo num title url conv in_queue requested_in_team; do
+      [ "$requested_in_team" = "1" ] || continue
       owner="${repo%%/*}"
       rname="${repo#*/}"
       last_ts=$(gh api graphql -F owner="$owner" -F name="$rname" -F number="$num" -f query='
@@ -630,7 +626,7 @@ else
                 }
               }
             }
-          }' 2>/dev/null | jq -r --argjson TEAMS "$ASSIGNED_JSON" '
+          }' 2>/dev/null | jq -r --argjson TEAMS "$requested_JSON" '
             (.data.repository?.pullRequest?.timelineItems?.nodes // [])
             | map(select(.requestedReviewer? and .requestedReviewer.__typename=="Team")
                   | {t: (.requestedReviewer.organization.login + "/" + .requestedReviewer.slug), createdAt})

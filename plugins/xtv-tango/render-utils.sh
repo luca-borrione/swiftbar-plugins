@@ -183,17 +183,17 @@ render_and_update_pagination() {
           marked_rereq=1
         fi
 
-        # record assigned PR to index if enabled
-        if [ "$COLLECT_ASSIGNED" = "1" ] && [ -n "$ASSIGNED_FILE" ]; then
-          printf "%s\t%s\n" "$repo" "$number" >>"$ASSIGNED_FILE"
+        # record team-requested PR to index if enabled
+        if [ "${COLLECT_REQUESTED_TO_TEAM:-0}" = "1" ] && [ -n "$REQUESTED_FILE" ]; then
+          printf "%s\t%s\n" "$repo" "$number" >>"$REQUESTED_FILE"
         fi
 
         # record current open PR with metrics for notifications
         if [ -n "${CURRENT_OPEN_FILE:-}" ]; then
-          assigned_flag="0"
-          [ "$COLLECT_ASSIGNED" = "1" ] && assigned_flag="1"
-          assigned_me_flag="0"
-          [ "${COLLECT_ASSIGNED_ME:-0}" = "1" ] && assigned_me_flag="1"
+          requested_flag="0"
+          [ "${COLLECT_REQUESTED_TO_TEAM:-0}" = "1" ] && requested_flag="1"
+          requested_me_flag="0"
+          [ "${COLLECT_REQUESTED_TO_ME:-0}" = "1" ] && requested_me_flag="1"
           # Sanitize title: replace tabs and newlines with spaces for safe TSV storage
           # Use original title (not decorated label) for notifications
           clean_title=$(echo "$title" | tr '\t\n\r' '   ')
@@ -201,7 +201,7 @@ render_and_update_pagination() {
           clean_comment_id=$(echo "$comment_id" | tr '\t\n\r' '   ')
           clean_comment_author=$(echo "$comment_author" | tr '\t\n\r' '   ')
           clean_comment_body=$(echo "$comment_body" | tr '\t\n\r' '   ')
-          printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$repo" "$number" "$clean_title" "$url" "$conv" "$in_queue" "$assigned_flag" "$clean_comment_id" "$clean_comment_author" "$clean_comment_body" "$assigned_me_flag" >>"$CURRENT_OPEN_FILE"
+          printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$repo" "$number" "$clean_title" "$url" "$conv" "$in_queue" "$requested_flag" "$clean_comment_id" "$clean_comment_author" "$clean_comment_body" "$requested_me_flag" >>"$CURRENT_OPEN_FILE"
         fi
 
         if [[ -n "$b64" ]]; then

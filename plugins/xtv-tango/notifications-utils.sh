@@ -34,23 +34,24 @@ notify_new_prs() {
     done
 }
 
-# Notify about newly assigned PRs
-notify_newly_assigned() {
+# Notify about newly requested PRs
+notify_newly_requested() {
   local current_file="$1"
   local prev_file="$2"
   local notified_file="$3"
   local state_dir="$4"
 
-  [ "${NOTIFY_NEWLY_ASSIGNED:-1}" != "1" ] && return 0
+  [ "${NOTIFY_NEWLY_REQUESTED:-1}" != "1" ] && return 0
 
-  awk -F'\t' '{a=$7; if (a=="") a="0"; printf "%s#%s\t%s\n",$1,$2,a}' "$prev_file" | sort >"${state_dir}/prev_assigned.tsv"
-  awk -F'\t' '{a=$7; if (a=="") a="0"; printf "%s#%s\t%s\n",$1,$2,a}' "$current_file" | sort >"${state_dir}/curr_assigned.tsv"
-  { join -t $'\t' -1 1 -2 1 "${state_dir}/prev_assigned.tsv" "${state_dir}/curr_assigned.tsv" || true; } |
+  # Team review requests (column 7)
+  awk -F'\t' '{a=$7; if (a=="") a="0"; printf "%s#%s\t%s\n",$1,$2,a}' "$prev_file" | sort >"${state_dir}/prev_requested.tsv"
+  awk -F'\t' '{a=$7; if (a=="") a="0"; printf "%s#%s\t%s\n",$1,$2,a}' "$current_file" | sort >"${state_dir}/curr_requested.tsv"
+  { join -t $'\t' -1 1 -2 1 "${state_dir}/prev_requested.tsv" "${state_dir}/curr_requested.tsv" || true; } |
     while IFS=$'\t' read -r key prev_a curr_a; do
       if [ "$prev_a" != "1" ] && [ "$curr_a" = "1" ]; then
         repo="${key%%#*}"
         num="${key##*#}"
-        notif_key="assigned:${repo}#${num}"
+        notif_key="requested-team:${repo}#${num}"
         # Skip if already notified
         if grep -q -F -x "$notif_key" "$notified_file" 2>/dev/null; then
           continue
@@ -60,7 +61,30 @@ notify_newly_assigned() {
         title=$(echo "$row" | cut -f3)
         url=$(echo "$row" | cut -f4)
         gid="xtv-pr-${repo//\//-}-${num}"
-        notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "Assigned to your team" -subtitle "$repo #$num" -message "$title" -open "$url" -sound default
+        notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "Review requested to your team" -subtitle "$repo #$num" -message "$title" -open "$url" -sound default
+        echo "$notif_key" >>"$notified_file"
+      fi
+    done
+
+  # Direct review requests to me (column 11)
+  awk -F'\t' '{m=$11; if (m=="") m="0"; printf "%s#%s\t%s\n",$1,$2,m}' "$prev_file" | sort >"${state_dir}/prev_requested_me.tsv"
+  awk -F'\t' '{m=$11; if (m=="") m="0"; printf "%s#%s\t%s\n",$1,$2,m}' "$current_file" | sort >"${state_dir}/curr_requested_me.tsv"
+  { join -t $'\t' -1 1 -2 1 "${state_dir}/prev_requested_me.tsv" "${state_dir}/curr_requested_me.tsv" || true; } |
+    while IFS=$'\t' read -r key prev_m curr_m; do
+      if [ "$prev_m" != "1" ] && [ "$curr_m" = "1" ]; then
+        repo="${key%%#*}"
+        num="${key##*#}"
+        notif_key="requested-me:${repo}#${num}"
+        # Skip if already notified
+        if grep -q -F -x "$notif_key" "$notified_file" 2>/dev/null; then
+          continue
+        fi
+        row=$(awk -F'\t' -v r="$repo" -v n="$num" '$1==r && $2==n {print; exit}' "$current_file")
+        [ -z "$row" ] && continue
+        title=$(echo "$row" | cut -f3)
+        url=$(echo "$row" | cut -f4)
+        gid="xtv-pr-${repo//\//-}-${num}"
+        notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "Review requested" -subtitle "$repo #$num" -message "$title" -open "$url" -sound default
         echo "$notif_key" >>"$notified_file"
       fi
     done
@@ -81,7 +105,7 @@ notify_rerequested() {
   REREQ_HITS_TMP="${state_dir}/rereq_hits.tmp"
   : >"$REREQ_HITS_TMP"
 
-  while IFS=$'\t' read -r repo num title url conv in_queue _assigned_in_team; do
+  while IFS=$'\t' read -r repo num title url conv in_queue _requested_in_team; do
     owner="${repo%%/*}"
     rname="${repo#*/}"
     last_ts=$(gh api graphql -F owner="$owner" -F name="$rname" -F number="$num" -f query='
@@ -170,7 +194,7 @@ notify_new_comments() {
 
   [ "${NOTIFY_NEW_COMMENT:-1}" != "1" ] && return 0
 
-  while IFS=$'\t' read -r repo num title url conv in_queue _assigned_in_team comment_id author body; do
+  while IFS=$'\t' read -r repo num title url conv in_queue _requested_in_team comment_id author body; do
     pr_key="${repo}#${num}"
 
     # Skip if no comment data
