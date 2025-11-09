@@ -37,14 +37,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Keep the shellcheck comments to allow jump to definition in the source files
 # shellcheck source=plugins/xtv-tango/utils.sh
 source "${SCRIPT_DIR}/xtv-tango/utils.sh"
+
 # shellcheck source=plugins/xtv-tango/cache-utils.sh
 source "${SCRIPT_DIR}/xtv-tango/cache-utils.sh"
+
 # shellcheck source=plugins/xtv-tango/fetch-pr-data-utils.sh
 source "${SCRIPT_DIR}/xtv-tango/fetch-pr-data-utils.sh"
+
 # shellcheck source=plugins/xtv-tango/render-utils.sh
 source "${SCRIPT_DIR}/xtv-tango/render-utils.sh"
+
 # shellcheck source=plugins/xtv-tango/notifications-utils.sh
 source "${SCRIPT_DIR}/xtv-tango/notifications-utils.sh"
+
 # shellcheck source=plugins/xtv-tango/fetch-prs-utils.sh
 source "${SCRIPT_DIR}/xtv-tango/fetch-prs-utils.sh"
 
@@ -134,7 +139,6 @@ export APPROVED_BY_ME_MARK="🟢"
 export CHANGES_REQUESTED_MARK="⛔"
 export COMMENT_MARK="💬"
 export DRAFT_MARK="▪️"
-export NOT_PARTICIPATED_MARK="🔅" # Shown when I'm not involved yet. Clears after I comment/approve/request changes or react to PR body. Comment reactions not counted.
 export QUEUE_MARK="🟠"
 export REREQUESTED_MARK="🔄"
 export UNREAD_MARK="🔺"
@@ -554,7 +558,7 @@ echo "---"
 cat "$TMP_MENU"
 
 # Cleanup temp files (menu buffers)
-rm -f "$TMP_MENU" "$UNREAD_FILE" "$REQUESTED_FILE" "$INVOLVES_FILE" 2>/dev/null || true
+rm -f "$TMP_MENU" "$UNREAD_FILE" "$REQUESTED_FILE" 2>/dev/null || true
 rm -rf "$TOTAL_DIR" 2>/dev/null || true
 
 # 3. Notifications across all sections (requested + raised-by)

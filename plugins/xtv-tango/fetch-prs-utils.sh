@@ -298,21 +298,6 @@ init_indexes() {
     : >"$UNREAD_FILE"
   fi
 
-  # Build index of PRs I have actively participated in (commenter:@me). Limit to 100 for speed.
-  INVOLVES_FILE="$TMP_DIR/INVOLVES_FILE.tsv"
-  local repo_q
-  repo_q=$(build_repo_qualifier)
-  if ! gh api graphql -F q="is:pr is:open commenter:@me${repo_q}" -F n="100" -f query='
-    query($q:String!,$n:Int!){
-      search(query:$q,type:ISSUE,first:$n){
-        edges{node{... on PullRequest{ number repository{nameWithOwner} }}}
-      }
-    }' \
-    --jq '.data.search.edges[].node | [.repository.nameWithOwner, (.number|tostring)] | @tsv' \
-    >"$INVOLVES_FILE" 2>/dev/null; then
-    : >"$INVOLVES_FILE"
-  fi
-
   # Index of PRs already listed in REQUESTED_TO_TEAMS (repo\tnumber)
   REQUESTED_FILE="$TMP_DIR/REQUESTED_FILE.tsv"
   : >"$REQUESTED_FILE"

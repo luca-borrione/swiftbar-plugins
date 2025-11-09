@@ -162,14 +162,6 @@ render_and_update_pagination() {
 
         # key for lookups
         needle="$repo"$'\t'"$number"
-        # not participated yet (no commenter:@me and no reaction on PR body)
-        participated=0
-        if [ -s "$INVOLVES_FILE" ] && grep -x -F -- "$needle" "$INVOLVES_FILE" >/dev/null 2>&1; then
-          participated=1
-        fi
-        if [ "$participated" -eq 0 ] && [ "${viewer_reacted:-false}" != "true" ]; then
-          label="${NOT_PARTICIPATED_MARK:-} $label"
-        fi
 
         # When requested, check my latest review state for decoration/notification
         if [ "${CHECK_MY_APPROVAL:-0}" = "1" ] || [ "${CHECK_MY_REVIEW_DISMISSED:-0}" = "1" ]; then
