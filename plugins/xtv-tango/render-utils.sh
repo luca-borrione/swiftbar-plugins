@@ -89,8 +89,8 @@ render_and_update_pagination() {
   )
 
   # First pass: collect all non-duplicate PRs and count them by repo
-  tmp_tsv TMP_FILTERED
-  tmp_tsv TMP_COUNTS
+  TMP_FILTERED=$(mktemp)
+  TMP_COUNTS=$(mktemp)
 
   while IFS= read -r line; do
     if [[ "$line" == $'__PR__\t'* ]]; then
@@ -135,7 +135,7 @@ render_and_update_pagination() {
   done <<<"$STREAM"
 
   # Second pass: render with corrected counts
-  tmp_txt TMP_OUT
+  TMP_OUT=$(mktemp)
   idx=0
   MAX_PAR="${XTV_CONC:-6}"
   SEEN_HEADER=0

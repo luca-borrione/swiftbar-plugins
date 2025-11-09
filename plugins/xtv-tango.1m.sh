@@ -34,9 +34,8 @@ set -euo pipefail
 # ----------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Keep the shellcheck comments to allow jump to definition in the source files
-# shellcheck source=plugins/xtv-tango/utils.sh
-source "${SCRIPT_DIR}/xtv-tango/utils.sh"
+# Notes:
+# => Keep the shellcheck comments to allow jump to definition in the source files
 
 # shellcheck source=plugins/xtv-tango/cache-utils.sh
 source "${SCRIPT_DIR}/xtv-tango/cache-utils.sh"
@@ -75,17 +74,6 @@ notify() {
     return 0
   fi
 }
-
-# Ensure cache base path and per-run tmp dir; clear tmp on each refresh
-if [ -z "${SWIFTBAR_PLUGIN_CACHE_PATH:-}" ]; then
-  SWIFTBAR_PLUGIN_CACHE_PATH="$HOME/Library/Caches/com.ameba.SwiftBar/Plugins/xtv-tango.1m.sh"
-fi
-# mkdir -p "$SWIFTBAR_PLUGIN_CACHE_PATH" 2>/dev/null || true
-# export SWIFTBAR_PLUGIN_CACHE_PATH
-TMP_DIR="$SWIFTBAR_PLUGIN_CACHE_PATH/tmp"
-# rm -rf "$TMP_DIR" 2>/dev/null || true
-mkdir -p "$TMP_DIR" 2>/dev/null || true
-export TMP_DIR
 
 # File used to mark PRs that were re-requested in the previous run (for menu emoji)
 REREQ_HITS_FILE="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-tango.rerequest.hits"
@@ -214,8 +202,7 @@ fi
 
 # 1.
 # Accumulator for all open PRs across sections (for notifications)
-CURRENT_OPEN_FILE="$TMP_DIR/CURRENT_OPEN_FILE.tsv"
-: >"$CURRENT_OPEN_FILE"
+CURRENT_OPEN_FILE="$(mktemp)"
 
 # Allowlist of repos (owner/repo) to constrain searches when provided
 WATCHED_ARR=()
@@ -249,12 +236,11 @@ init_indexes
 HEADER_LINK_Q=""
 
 # Start: buffer for the per-team menu and compute totals across teams
-TMP_MENU="$TMP_DIR/TMP_MENU.txt"
-: >"$TMP_MENU"
+TMP_MENU="$(mktemp)"
 
 # Track seen PR URLs to avoid duplicates across sections
-SEEN_PRS_FILE="$TMP_DIR/SEEN_PRS_FILE.list"
-: >"$SEEN_PRS_FILE"
+SEEN_PRS_FILE="$(mktemp)"
+
 export SEEN_PRS_FILE
 # Count seen PRs across open sections for menubar when All is hidden
 COUNT_SEEN=1
@@ -265,8 +251,8 @@ if ! [[ "$requested_MAX_PAR" =~ ^[1-9][0-9]*$ ]]; then requested_MAX_PAR=8; fi
 # Personal sections before team sections
 # 0.a Raised by Me (my authored PRs)
 if [ "${SHOW_RAISED_BY_ME_SECTION:-0}" = "1" ]; then
-  TMP_MYPR_MENU="$TMP_DIR/TMP_MYPR_MENU.txt"
-  : >"$TMP_MYPR_MENU"
+  TMP_MYPR_MENU="$(mktemp)"
+
   fetch_raised_by_me "$TMP_MYPR_MENU"
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_MYPR_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
@@ -281,11 +267,11 @@ fi
 
 # 0.b Mentioned (tagged me in comments)
 if [ "${SHOW_MENTIONED_SECTION:-0}" = "1" ]; then
-  TMP_MENTIONED_MENU="$TMP_DIR/TMP_MENTIONED_MENU.txt"
-  : >"$TMP_MENTIONED_MENU"
+  TMP_MENTIONED_MENU="$(mktemp)"
+
   # Collect current mentions for notification diffing
-  MENTIONED_CURR_FILE="$TMP_DIR/MENTIONED_CURR_FILE.tsv"
-  : >"$MENTIONED_CURR_FILE"
+  MENTIONED_CURR_FILE="$(mktemp)"
+
   export MENTIONED_CURR_FILE
   fetch_mentioned "$TMP_MENTIONED_MENU"
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_MENTIONED_MENU" | awk '{s+=$1} END{print s+0}')
@@ -301,8 +287,8 @@ fi
 
 # 0.c Requested to Me (review-requested:@me)
 if [ "${SHOW_REQUESTED_TO_ME_SECTION:-0}" = "1" ]; then
-  TMP_ME_MENU="$TMP_DIR/TMP_ME_MENU.txt"
-  : >"$TMP_ME_MENU"
+  TMP_ME_MENU="$(mktemp)"
+
   fetch_requested_to_me "$TMP_ME_MENU"
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_ME_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
@@ -317,8 +303,8 @@ fi
 
 # 0.d Participated (any involvement on open PRs)
 if [ "${SHOW_PARTICIPATED_SECTION:-0}" = "1" ]; then
-  TMP_PART_MENU="$TMP_DIR/TMP_PART_MENU.txt"
-  : >"$TMP_PART_MENU"
+  TMP_PART_MENU="$(mktemp)"
+
   fetch_participated "$TMP_PART_MENU"
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_PART_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
@@ -337,8 +323,8 @@ if [ "${SHOW_RECENTLY_MERGED_SECTION:-0}" = "1" ] &&
   [[ "${RECENTLY_MERGED_DAYS}" =~ ^[0-9]+$ ]] &&
   ((RECENTLY_MERGED_DAYS > 0)); then
   echo "Recently Merged" >>"$TMP_MENU"
-  TMP_MERGED_MENU="$TMP_DIR/TMP_MERGED_MENU.txt"
-  : >"$TMP_MERGED_MENU"
+  TMP_MERGED_MENU="$(mktemp)"
+
   # Do not count merged PRs into SEEN_PRS_FILE (menubar count when All is hidden)
   _PREV_COUNT_SEEN="${COUNT_SEEN:-1}"
   COUNT_SEEN=0
@@ -361,9 +347,7 @@ fi
 if [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; then
   TP_COUNT=0
   # Run total counts concurrently across all configured teams
-  TOTAL_DIR="$TMP_DIR/TOTAL_DIR"
-  rm -rf "$TOTAL_DIR" 2>/dev/null || true
-  mkdir -p "$TOTAL_DIR"
+  TOTAL_DIR="$(mktemp -d)"
   TOTAL_PIDS=()
   for team in "${REQUESTED_TO_TEAMS_ARRAY[@]}"; do
     REPO_Q=$(build_repo_qualifier)
@@ -385,8 +369,8 @@ if [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; then
   N=50
   for team in "${REQUESTED_TO_TEAMS_ARRAY[@]}"; do
     team_name="${team#*/}"
-    TMP_TEAM_MENU="$TMP_DIR/TMP_TEAM_MENU.txt"
-    : >"$TMP_TEAM_MENU"
+    TMP_TEAM_MENU="$(mktemp)"
+
     fetch_team_prs "$team" "$TMP_TEAM_MENU"
     SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_TEAM_MENU" | awk '{s+=$1} END{print s+0}')
     [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
@@ -407,8 +391,7 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
   for rteam in "${RAISED_BY_TEAMS_ARRAY[@]}"; do
     r_org="${rteam%%/*}"
     r_name="${rteam#*/}"
-    TMP_TEAM_MENU="$TMP_DIR/TMP_TEAM_MENU.txt"
-    : >"$TMP_TEAM_MENU"
+    TMP_TEAM_MENU="$(mktemp)"
 
     # Collect team members (requires read:org). Single page (100) for speed; cached per TEAM_MEMBERS_CACHE_TTL (default 24h)
     MEM_CACHE_DIR="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-team-members"
@@ -437,13 +420,10 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
       RB_AUTHORS_LIST+=" author:${u}"
     done
 
-    RB_NODES_FILE="$TMP_DIR/RB_NODES_FILE.json"
-    : >"$RB_NODES_FILE"
+    RB_NODES_FILE="$(mktemp)"
 
     # Parallelize per-author queries to speed up Raised by section
-    RB_DIR="$TMP_DIR/RB_DIR"
-    rm -rf "$RB_DIR" 2>/dev/null || true
-    mkdir -p "$RB_DIR"
+    RB_DIR="$(mktemp -d)"
     RB_PIDS=()
     RB_MAX_PAR="${RAISED_BY_CONCURRENCY:-8}"
     # Validate positive integer; fallback to 8 if invalid
@@ -519,8 +499,8 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ] && [ "${SHOW_ALL_SECTION:-1}" 
 fi
 
 if [ "${SHOW_ALL_SECTION:-1}" = "1" ]; then
-  TMP_ALL_MENU="$TMP_DIR/TMP_ALL_MENU.txt"
-  : >"$TMP_ALL_MENU"
+  TMP_ALL_MENU="$(mktemp)"
+
   # Compute the All total directly during rendering via a single accumulator
   ALL_TOTAL=0
   ACCUMULATE_ALL_TOTAL=1
@@ -690,8 +670,7 @@ set -e
 # Clean up old notification entries for PRs that no longer exist
 # Keep only entries for PRs that are currently open or were just closed (in PREV)
 if [ -s "$NOTIFIED_FILE" ]; then
-  NOTIFIED_TMP="$TMP_DIR/NOTIFIED_TMP.txt"
-  : >"$NOTIFIED_TMP"
+  NOTIFIED_TMP="$(mktemp)"
 
   while IFS= read -r notif_line; do
     # Extract repo#num from notification key (format: type:repo#num or type:repo#num:extra)

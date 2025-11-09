@@ -104,8 +104,7 @@ fetch_all() {
 
   # Accumulate all pages of search results
   local edges_tmp
-  edges_tmp="$TMP_DIR/edges_tmp.jsonl"
-  : >"$edges_tmp"
+  edges_tmp="$(mktemp)"
 
   local after=""
   local page_idx=0
@@ -291,7 +290,7 @@ fetch_team_prs() {
 # Initialize indexes (unread, involves, requested)
 init_indexes() {
   # Build index of unread PR notifications (requires notifications scope)
-  UNREAD_FILE="$TMP_DIR/UNREAD_FILE.tsv"
+  UNREAD_FILE="$(mktemp)"
   if ! gh api -H "Accept: application/vnd.github+json" 'notifications?per_page=100' \
     --jq '.[] | select(.unread == true and .subject.type == "PullRequest") | [.repository.full_name, (.subject.url | sub(".*/pulls/"; ""))] | @tsv' \
     >"$UNREAD_FILE" 2>/dev/null; then
@@ -299,6 +298,6 @@ init_indexes() {
   fi
 
   # Index of PRs already listed in REQUESTED_TO_TEAMS (repo\tnumber)
-  REQUESTED_FILE="$TMP_DIR/REQUESTED_FILE.tsv"
-  : >"$REQUESTED_FILE"
+  REQUESTED_FILE="$(mktemp)"
+
 }
