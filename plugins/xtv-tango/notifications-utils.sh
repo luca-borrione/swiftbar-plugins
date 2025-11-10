@@ -224,7 +224,7 @@ notify_new_comments() {
   done <"$current_file"
 }
 
-# Notify about PRs pushed to merge queue
+# Notify about PRs entering or leaving the merge queue (filtered by knobs)
 notify_queue() {
   local current_file="$1"
   local prev_file="$2"
@@ -233,24 +233,62 @@ notify_queue() {
 
   [ "${NOTIFY_QUEUE:-1}" != "1" ] && return 0
 
+  # Resolve my login for raised-by-me filtering (cached via MY_LOGIN if provided)
+  local my_login="${MY_LOGIN:-}"
+  if [ -z "$my_login" ]; then
+    my_login=$(gh api graphql -f query='query{viewer{login}}' --jq '.data.viewer.login' 2>/dev/null || gh api user --jq '.login' 2>/dev/null || echo "")
+  fi
+
   awk -F'\t' '{print $1"#"$2"\t"$6}' "$prev_file" | sort >"$state_dir/prev_q.tsv"
   awk -F'\t' '{print $1"#"$2"\t"$6}' "$current_file" | sort >"$state_dir/curr_q.tsv"
   { join -t $'\t' -1 1 -2 1 "$state_dir/prev_q.tsv" "$state_dir/curr_q.tsv" || true; } |
     while IFS=$'\t' read -r key prev_q curr_q; do
-      if [ "$prev_q" != "true" ] && [ "$curr_q" = "true" ]; then
-        repo="${key%%#*}"
-        num="${key##*#}"
-        notif_key="queue:${repo}#${num}"
-        if grep -q -F -x "$notif_key" "$notified_file" 2>/dev/null; then
-          continue
+      repo="${key%%#*}"
+      num="${key##*#}"
+
+      # Lookup full row for author/url/title
+      row=$(awk -F'\t' -v r="$repo" -v n="$num" '$1==r && $2==n {print; exit}' "$current_file")
+      [ -z "$row" ] && continue
+      title=$(echo "$row" | cut -f3)
+      url=$(echo "$row" | cut -f4)
+      author_login=$(echo "$row" | awk -F'\t' '{print $NF}')
+
+      # Filters
+      raised_by_me=0
+      if [ -n "$my_login" ] && [ "$author_login" = "$my_login" ]; then raised_by_me=1; fi
+
+      participated=0
+      if [ -n "${PARTICIPATED_FILE:-}" ] && [ -s "${PARTICIPATED_FILE}" ]; then
+        if grep -q -F -x "$repo\t$num" "${PARTICIPATED_FILE}" 2>/dev/null; then
+          participated=1
         fi
-        row=$(awk -F'\t' -v r="$repo" -v n="$num" '$1==r && $2==n {print; exit}' "$current_file")
-        [ -z "$row" ] && continue
-        title=$(echo "$row" | cut -f3)
-        url=$(echo "$row" | cut -f4)
-        gid="xtv-pr-${repo//\//-}-${num}"
-        notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "Pushed to merge queue" -subtitle "$repo #$num" -message "$title" -open "$url" -sound default
-        echo "$notif_key" >>"$notified_file"
+      fi
+
+      allowed=0
+      if [ "${NOTIFY_QUEUE_RAISED_BY_ME:-0}" = "1" ] && [ "$raised_by_me" -eq 1 ]; then allowed=1; fi
+      if [ "${NOTIFY_QUEUE_PARTICIPATED:-0}" = "1" ] && [ "$participated" -eq 1 ]; then allowed=1; fi
+      [ "$allowed" -eq 1 ] || continue
+
+      gid="xtv-pr-${repo//\//-}-${num}-queue"
+
+      # Entered queue
+      if [ "$prev_q" != "true" ] && [ "$curr_q" = "true" ]; then
+        notif_key="queue-enter:${repo}#${num}"
+        if ! grep -q -F -x "$notif_key" "$notified_file" 2>/dev/null; then
+          msg="author $author_login"$'\n'"$title"
+          notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "${QUEUE_MARK:-} Pushed to merge queue" -subtitle "$repo #$num" -message "$msg" -open "$url" -sound default
+          echo "$notif_key" >>"$notified_file"
+        fi
+      fi
+
+      # Left queue
+      if [ "$prev_q" = "true" ] && [ "$curr_q" != "true" ]; then
+        notif_key="queue-leave:${repo}#${num}"
+        if ! grep -q -F -x "$notif_key" "$notified_file" 2>/dev/null; then
+          msg="author $author_login"$'\n'"$title"
+          notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "${QUEUE_LEFT_MARK:-} Removed from merge queue" -subtitle "$repo #$num" -message "$msg" -open "$url" -sound default
+          echo "$notif_key" >>"$notified_file"
+        fi
       fi
     done
 }

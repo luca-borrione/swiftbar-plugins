@@ -109,6 +109,8 @@ export NOTIFY_MERGED=1
 export NOTIFY_NEW_COMMENT=1
 export NOTIFY_NEW_PR=1
 export NOTIFY_NEWLY_REQUESTED=1
+export NOTIFY_QUEUE_PARTICIPATED=1
+export NOTIFY_QUEUE_RAISED_BY_ME=1
 export NOTIFY_QUEUE=1
 export NOTIFY_REREQUESTED=1
 
@@ -128,6 +130,7 @@ export CHANGES_REQUESTED_MARK="⛔"
 export COMMENT_MARK="💬"
 export DRAFT_MARK="▪️"
 export QUEUE_MARK="🟠"
+export QUEUE_LEFT_MARK="🟡"
 export REREQUESTED_MARK="🔄"
 export UNREAD_MARK="🔺"
 
@@ -144,6 +147,9 @@ NBCUDTC/xtv-bravo
 NBCUDTC/xtv-delta
 NBCUDTC/xtv-tango
 "
+
+# Previous-state file for queue-change decorations in render
+export PREV_STATE_FILE="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-tango.state.tsv"
 
 # Repos allowlist (limits searches to these repos when non-empty)
 WATCHED_REPOS="
@@ -305,7 +311,14 @@ fi
 if [ "${SHOW_PARTICIPATED_SECTION:-0}" = "1" ]; then
   TMP_PART_MENU="$(mktemp)"
 
+  # Collect current participated keys for notification filtering (repo\tnum)
+  PARTICIPATED_CURR_FILE="$(mktemp)"
+  export COLLECT_PARTICIPATED="1"
+  export PARTICIPATED_FILE="$PARTICIPATED_CURR_FILE"
+
   fetch_participated "$TMP_PART_MENU"
+  export COLLECT_PARTICIPATED="0"
+
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_PART_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
   if [ "$SECTION_COUNT" -gt 0 ]; then

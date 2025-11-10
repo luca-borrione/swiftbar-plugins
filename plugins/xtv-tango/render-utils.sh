@@ -190,9 +190,23 @@ render_and_update_pagination() {
           marked_rereq=1
         fi
 
+        # If this PR has just been pulled out from the merge queue (prev had true, now not true),
+        # prepend a yellow circle to the label
+        if [ "$in_queue" != "true" ] && [ -n "${PREV_STATE_FILE:-}" ] && [ -s "$PREV_STATE_FILE" ]; then
+          prev_q=$(awk -F'\t' -v r="$repo" -v n="$number" '$1==r && $2==n {print $6; exit}' "$PREV_STATE_FILE" 2>/dev/null)
+          if [ "$prev_q" = "true" ]; then
+            label="${QUEUE_LEFT_MARK:-🟡} $label"
+          fi
+        fi
+
         # record team-requested PR to index if enabled
         if [ "${COLLECT_REQUESTED_TO_TEAM:-0}" = "1" ] && [ -n "$REQUESTED_FILE" ]; then
           printf "%s\t%s\n" "$repo" "$number" >>"$REQUESTED_FILE"
+        fi
+
+        # record participated PR to index if enabled
+        if [ "${COLLECT_PARTICIPATED:-0}" = "1" ] && [ -n "$PARTICIPATED_FILE" ]; then
+          printf "%s\t%s\n" "$repo" "$number" >>"$PARTICIPATED_FILE"
         fi
 
         # record current open PR with metrics for notifications
