@@ -6,4 +6,5 @@
   "editor.codeActionsOnSave": {
     "source.fixAll.shellcheck": "explicit"
   },
+  "bashIde.globPattern": "**/*.{sh,bash,zsh}"
 }
