@@ -17,13 +17,30 @@ fetch_and_render_prs() {
   export HEADER_LINK_Q="$header_link_q"
 
   # Single GraphQL search call (no pagination). Max 100 items per GitHub API.
-  RESP=$(gh api graphql -F q="$query" -F n="100" -f query='
-    query($q:String!,$n:Int!){
-      search(query:$q,type:ISSUE,first:$n){
-        pageInfo{hasNextPage endCursor}
-        edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads(first:100){nodes{comments{totalCount}}} reviewRequests(first:100){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}}}}
-      }}' 2>/dev/null || echo '{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}')
-  render_and_update_pagination >>"$output_file"
+  local _attempt=1
+  local _max_attempts=2
+  while :; do
+    RESP=$(gh api graphql -F q="$query" -F n="100" -f query='
+      query($q:String!,$n:Int!){
+        search(query:$q,type:ISSUE,first:$n){
+          pageInfo{hasNextPage endCursor}
+          edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads(first:100){nodes{comments{totalCount}}} reviewRequests(first:100){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}}}}
+        }}' 2>/dev/null || echo '{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}')
+    # Ensure valid JSON
+    if ! echo "$RESP" | jq -e . >/dev/null 2>&1; then
+      RESP='{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}'
+    fi
+    local _edges
+    _edges=$(echo "$RESP" | jq '((.data.search.edges // []) | length)' 2>/dev/null || echo 0)
+    if [ "${_edges:-0}" -eq 0 ] && [ "$_attempt" -lt "$_max_attempts" ]; then
+      log_warn "retry: empty search; header=${header_link_q}"
+      sleep 0.3
+      _attempt=$((_attempt + 1))
+      continue
+    fi
+    render_and_update_pagination >>"$output_file"
+    break
+  done
 }
 
 # Build repo allowlist qualifier
@@ -239,27 +256,41 @@ fetch_participated() {
 
   # Fetch both result sets (same GraphQL selection as other sections)
   local empty='{"data":{"search":{"edges":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}'
+  local _attempt=1
+  local _max_attempts=2
   local J1 J2
-  J1=$(gh api graphql -F q="$q_commenter" -F n="100" -f query='
-    query($q:String!,$n:Int!){
-      search(query:$q,type:ISSUE,first:$n){
-        pageInfo{hasNextPage endCursor}
-        edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads(first:100){nodes{comments{totalCount}}} reviewRequests(first:100){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}}}}
-    }}' 2>/dev/null) || J1="$empty"
-  J2=$(gh api graphql -F q="$q_reacted" -F n="100" -f query='
-    query($q:String!,$n:Int!){
-      search(query:$q,type:ISSUE,first:$n){
-        pageInfo{hasNextPage endCursor}
-        edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads(first:100){nodes{comments{totalCount}}} reviewRequests(first:100){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}}}}
-    }}' 2>/dev/null) || J2="$empty"
+  while :; do
+    J1=$(gh api graphql -F q="$q_commenter" -F n="100" -f query='
+      query($q:String!,$n:Int!){
+        search(query:$q,type:ISSUE,first:$n){
+          pageInfo{hasNextPage endCursor}
+          edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads(first:100){nodes{comments{totalCount}}} reviewRequests(first:100){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}}}}
+      }}' 2>/dev/null || echo "$empty")
+    J2=$(gh api graphql -F q="$q_reacted" -F n="100" -f query='
+      query($q:String!,$n:Int!){
+        search(query:$q,type:ISSUE,first:$n){
+          pageInfo{hasNextPage endCursor}
+          edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted} reviewThreads(first:100){nodes{comments{totalCount}}} reviewRequests(first:100){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}}}}
+      }}' 2>/dev/null || echo "$empty")
 
-  # Combine and keep only reaction-only items where viewerHasReacted==true; then unique by repo+number
-  RESP=$(jq -s '{data:{search:{edges:((.[0].data.search.edges // [])
-          + ((.[1].data.search.edges // [])
-             | map(select(((.node.reactionGroups // []) | map(.viewerHasReacted) | any) == true))
-            )), pageInfo:{hasNextPage:false,endCursor:null}}}}
-        | .data.search.edges |= unique_by(.node.repository.nameWithOwner + "#" + (.node.number|tostring))' \
-    <(echo "${J1:-$empty}") <(echo "${J2:-$empty}") 2>/dev/null || echo "$empty")
+    # Combine and keep only reaction-only items where viewerHasReacted==true; then unique by repo+number
+    RESP=$(jq -s '{data:{search:{edges:((.[0].data.search.edges // [])
+            + ((.[1].data.search.edges // [])
+               | map(select(((.node.reactionGroups // []) | map(.viewerHasReacted) | any) == true))
+              )), pageInfo:{hasNextPage:false,endCursor:null}}}}
+          | .data.search.edges |= unique_by(.node.repository.nameWithOwner + "#" + (.node.number|tostring))' \
+      <(echo "${J1:-$empty}") <(echo "${J2:-$empty}") 2>/dev/null || echo "$empty")
+
+    local _edges
+    _edges=$(echo "$RESP" | jq '((.data.search.edges // []) | length)' 2>/dev/null || echo 0)
+    if [ "${_edges:-0}" -eq 0 ] && [ "$_attempt" -lt "$_max_attempts" ]; then
+      log_warn "retry: empty participated search; header=is:pr is:open commenter:@me"
+      sleep 0.3
+      _attempt=$((_attempt + 1))
+      continue
+    fi
+    break
+  done
 
   # Decorations apply to the unified set
   export CHECK_MY_REVIEW_DISMISSED="1"

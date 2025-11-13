@@ -77,7 +77,7 @@ get_pr_data_combined() {
 
         "\($conv)\t\($appr)\t\($cid)\t\($cauthor)\t\($cbody)"
       end
-    ' 2>/dev/null)
+    ' 2>/dev/null || echo $'0\t0\t\t\t')
 
   # Validate result (at minimum we need conv and appr counts)
   if [[ "$result" =~ ^[0-9]+$'\t'[0-9]+ ]]; then
@@ -189,4 +189,3 @@ get_my_review_status() {
   printf "%s\t%s\n" "$updatedAt" "$out" >"$file.tmp" 2>/dev/null && mv "$file.tmp" "$file" 2>/dev/null || true
   printf "%s\t%s\t%s\n" "${state:-}" "${ts:-}" "${had:-false}"
 }
-

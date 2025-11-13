@@ -30,6 +30,39 @@ set -euo pipefail
 #   SWIFTBAR_PLUGIN_CACHE_PATH       base dir for avatar/conversation/approvals caches
 #   default '~/Library/Caches/com.ameba.SwiftBar/Plugins/xtv-tango.1m.sh'
 
+# ----------------------------------------------------------------------------
+# Logging (lightweight, file-based). Enable with XTV_LOG_LEVEL=[DEBUG|INFO|WARN|ERROR]
+# Defaults to INFO. Logs are written under SWIFTBAR_PLUGIN_CACHE_PATH (or /tmp).
+set -E
+: "${XTV_LOG_LEVEL:=INFO}"
+LOG_BASE_DIR="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}"
+mkdir -p "$LOG_BASE_DIR" 2>/dev/null || true
+XTV_LOG_FILE="$LOG_BASE_DIR/xtv-tango.run.log"
+# Simple rotation to last ~2000 lines
+if [ -f "$XTV_LOG_FILE" ]; then
+  LINES=$(wc -l <"$XTV_LOG_FILE" 2>/dev/null || echo 0)
+  if [ "${LINES:-0}" -gt 5000 ]; then
+    tail -n 2000 "$XTV_LOG_FILE" >"${XTV_LOG_FILE}.tmp" 2>/dev/null && mv "${XTV_LOG_FILE}.tmp" "$XTV_LOG_FILE"
+  fi
+fi
+log_level_num() { case "$1" in DEBUG) echo 10 ;; INFO) echo 20 ;; WARN) echo 30 ;; ERROR) echo 40 ;; *) echo 20 ;; esac }
+LOG_LEVEL_NUM=$(log_level_num "$XTV_LOG_LEVEL")
+_log_write() {
+  local lvl="$1"
+  shift
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  printf '%s [%s] %s\n' "$ts" "$lvl" "$*" >>"$XTV_LOG_FILE"
+}
+log_debug() { [ "$(log_level_num DEBUG)" -ge "$LOG_LEVEL_NUM" ] && _log_write DEBUG "$@"; }
+log_info() { [ "$(log_level_num INFO)" -ge "$LOG_LEVEL_NUM" ] && _log_write INFO "$@"; }
+log_warn() { [ "$(log_level_num WARN)" -ge "$LOG_LEVEL_NUM" ] && _log_write WARN "$@"; }
+log_error() { [ "$(log_level_num ERROR)" -ge "$LOG_LEVEL_NUM" ] && _log_write ERROR "$@"; }
+export XTV_LOG_FILE XTV_LOG_LEVEL LOG_LEVEL_NUM
+export -f log_debug log_info log_warn log_error log_level_num _log_write
+trap 'log_error "ERR trap exit=$? line=$LINENO cmd=$BASH_COMMAND"' ERR
+log_info "=== xtv-tango run start pid=$$ ==="
+
 # MODULES:
 # ----------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -119,8 +152,13 @@ export TEAM_MEMBERS_CACHE_TTL=86400
 
 # Concurrency for "Raised by" per-author fetch (parallel gh calls); must be a positive integer
 export RAISED_BY_CONCURRENCY=12
+
 # Concurrency for "Requested to" totals-count across teams; must be a positive integer
 export REQUESTEDCONCURRENCY=12
+
+# Notification ledger: TSV file storing last-sent timestamps per event key (e.g., new:owner/repo#123) used to dedupe notifications
+# GC policy: keep entries only for PRs that are currently open; drop everything else (no time-based TTL)
+export NOTIFY_LEDGER_GC=1
 
 # Marks for metrics/state; customize as you like
 export APPROVAL_DISMISSED_MARK="⚪"
@@ -262,6 +300,8 @@ if [ "${SHOW_RAISED_BY_ME_SECTION:-0}" = "1" ]; then
   fetch_raised_by_me "$TMP_MYPR_MENU"
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_MYPR_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
+  log_info "section: RaisedByMe count=${SECTION_COUNT}"
+
   if [ "$SECTION_COUNT" -gt 0 ]; then
     echo "Raised by Me: ${SECTION_COUNT}" >>"$TMP_MENU"
   else
@@ -282,6 +322,8 @@ if [ "${SHOW_MENTIONED_SECTION:-0}" = "1" ]; then
   fetch_mentioned "$TMP_MENTIONED_MENU"
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_MENTIONED_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
+  log_info "section: Mentioned count=${SECTION_COUNT}"
+
   if [ "$SECTION_COUNT" -gt 0 ]; then
     echo "Mentioned: ${SECTION_COUNT}" >>"$TMP_MENU"
   else
@@ -298,6 +340,8 @@ if [ "${SHOW_REQUESTED_TO_ME_SECTION:-0}" = "1" ]; then
   fetch_requested_to_me "$TMP_ME_MENU"
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_ME_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
+  log_info "section: RequestedToMe count=${SECTION_COUNT}"
+
   if [ "$SECTION_COUNT" -gt 0 ]; then
     echo "Requested to Me: ${SECTION_COUNT}" >>"$TMP_MENU"
   else
@@ -321,6 +365,8 @@ if [ "${SHOW_PARTICIPATED_SECTION:-0}" = "1" ]; then
 
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_PART_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
+  log_info "section: Participated count=${SECTION_COUNT}"
+
   if [ "$SECTION_COUNT" -gt 0 ]; then
     echo "Participated: ${SECTION_COUNT}" >>"$TMP_MENU"
   else
@@ -379,6 +425,7 @@ fi
 if [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; then
   # 2.
   # Show the list of PRs per configured team
+
   N=50
   for team in "${REQUESTED_TO_TEAMS_ARRAY[@]}"; do
     team_name="${team#*/}"
@@ -387,7 +434,10 @@ if [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; then
     fetch_team_prs "$team" "$TMP_TEAM_MENU"
     SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_TEAM_MENU" | awk '{s+=$1} END{print s+0}')
     [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
+    log_info "section: RequestedToTeam[${team_name}] count=${SECTION_COUNT}"
+
     if [ "$SECTION_COUNT" -gt 0 ]; then
+
       echo "$team_name: ${SECTION_COUNT}" >>"$TMP_MENU"
     else
       echo "$team_name" >>"$TMP_MENU"
@@ -488,6 +538,7 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
     if [ -n "$RB_AUTHORS_LIST" ]; then
       HEADER_LINK_Q="is:pr is:open${RB_AUTHORS_LIST}"
     else
+
       HEADER_LINK_Q="is:pr is:open"
     fi
     HEADER_LINK_KIND="search"
@@ -496,8 +547,12 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
 
     SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_TEAM_MENU" | awk '{s+=$1} END{print s+0}')
     [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
+    log_info "section: RaisedByTeam[${r_name}] count=${SECTION_COUNT}"
+
     if [ "$SECTION_COUNT" -gt 0 ]; then
+
       echo "$r_name: ${SECTION_COUNT}" >>"$TMP_MENU"
+
     else
       echo "$r_name" >>"$TMP_MENU"
     fi
@@ -521,9 +576,12 @@ if [ "${SHOW_ALL_SECTION:-1}" = "1" ]; then
   unset ACCUMULATE_ALL_TOTAL
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_ALL_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
+  log_info "section: All count=${SECTION_COUNT}"
+
   if [ "$SECTION_COUNT" -gt 0 ]; then
     echo "All: ${SECTION_COUNT}" >>"$TMP_MENU"
   else
+
     echo "All" >>"$TMP_MENU"
   fi
   cat "$TMP_ALL_MENU" >>"$TMP_MENU"
@@ -559,10 +617,18 @@ STATE_DIR="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}"
 STATE_FILE="$STATE_DIR/xtv-tango.state.tsv"
 NOTIFIED_FILE="$STATE_DIR/xtv-tango.notified.tsv"
 mkdir -p "$STATE_DIR"
+NOTIFY_LEDGER_FILE="$STATE_DIR/xtv-tango.notification-ledger.tsv"
+export NOTIFY_LEDGER_FILE
+
 touch "$STATE_FILE"
 touch "$NOTIFIED_FILE"
+touch "$NOTIFY_LEDGER_FILE"
+
 # Temporarily relax -e for notifications to avoid SwiftBar error panel on intermittent API issues
 set +e
+
+rows=$(wc -l <"$CURRENT_OPEN_FILE" 2>/dev/null || echo 0)
+log_info "notifications: begin current_rows=${rows}"
 
 # CURRENT_OPEN_FILE contains: repo\tnumber\ttitle\turl\tconv\tin_queue\trequested_in_team\tcomment_id\tcomment_author\tcomment_body\tdirect_to_me\tauthor_login
 if [ ! -s "$STATE_FILE" ]; then
@@ -582,99 +648,25 @@ else
     notify_mentions "$CURRENT_OPEN_FILE" "$STATE_MENTION_FILE" "$MENTIONED_CURR_FILE" "$NOTIFIED_FILE"
   fi
 
-  # Re-requested review (more complex, kept inline for now)
-  # Re-requested review to your team (fires even if already requested)
+  # Re-requested review (migrated to ledger-based function)
   if [ "${NOTIFY_REREQUESTED:-1}" = "1" ]; then
     STATE_REREQ_FILE="${STATE_DIR}/xtv-tango.rerequest.state.tsv"
-    CURR_REREQ_FILE="${STATE_DIR}/xtv-tango.rerequest.curr.tsv"
-    : >"$CURR_REREQ_FILE"
-
-    # prepare current run re-request hits file (for next menu render)
-    REREQ_HITS_TMP="${REREQ_HITS_FILE}.tmp"
-    if [ -s "$REREQ_HITS_FILE" ]; then
-      cp "$REREQ_HITS_FILE" "$REREQ_HITS_TMP" 2>/dev/null || : >"$REREQ_HITS_TMP"
-    else
-      : >"$REREQ_HITS_TMP"
-    fi
-
-    # Build teams JSON array for jq membership check
-    requested_JSON="["
-    for t in "${REQUESTED_TO_TEAMS_ARRAY[@]}"; do requested_JSON+="\"$t\","; done
-    requested_JSON="${requested_JSON%,}]"
-
-    # For each current PR requested to team, fetch latest team ReviewRequestedEvent timestamp
-    while IFS=$'\t' read -r repo num title url conv in_queue requested_in_team; do
-      [ "$requested_in_team" = "1" ] || continue
-      owner="${repo%%/*}"
-      rname="${repo#*/}"
-      last_ts=$(gh api graphql -F owner="$owner" -F name="$rname" -F number="$num" -f query='
-          query($owner:String!,$name:String!,$number:Int!){
-            repository(owner:$owner,name:$name){
-              pullRequest(number:$number){
-                timelineItems(last: 20, itemTypes: REVIEW_REQUESTED_EVENT){
-                  nodes{
-                    createdAt
-                    requestedReviewer{
-                      __typename
-                      ... on Team { slug organization{ login } }
-                      ... on User { login }
-                    }
-                  }
-                }
-              }
-            }
-          }' 2>/dev/null | jq -r --argjson TEAMS "$requested_JSON" '
-            (.data.repository?.pullRequest?.timelineItems?.nodes // [])
-            | map(select(.requestedReviewer? and .requestedReviewer.__typename=="Team")
-                  | {t: (.requestedReviewer.organization.login + "/" + .requestedReviewer.slug), createdAt})
-            | map(select($TEAMS | index(.t)))
-            | (map(.createdAt) | max) // empty' || true)
-      if [ -n "$last_ts" ]; then
-        printf "%s#%s\t%s\n" "$repo" "$num" "$last_ts" >>"$CURR_REREQ_FILE"
-      fi
-    done <"$CURRENT_OPEN_FILE"
-
-    # Compare to previous map and notify only when timestamp increased
-    if [ -s "$STATE_REREQ_FILE" ]; then
-      { join -t $'\t' -1 1 -2 1 "$STATE_REREQ_FILE" "$CURR_REREQ_FILE" || true; } |
-        while IFS=$'\t' read -r key prev_ts curr_ts; do
-          if [ -n "$curr_ts" ] && [ "$curr_ts" \> "$prev_ts" ]; then
-            repo="${key%%#*}"
-            num="${key##*#}"
-            # Check if we already notified about this re-request timestamp
-            notif_key="rerequest:${key}:${curr_ts}"
-            if grep -q -F -x "$notif_key" "$NOTIFIED_FILE" 2>/dev/null; then
-              continue
-            fi
-            row=$(awk -F'\t' -v r="$repo" -v n="$num" '$1==r && $2==n {print; exit}' "$CURRENT_OPEN_FILE")
-            [ -z "$row" ] && continue
-            # record marker for next menu render
-            printf "%s\t%s\n" "$repo" "$num" >>"$REREQ_HITS_TMP"
-
-            title=$(echo "$row" | cut -f3)
-            url=$(echo "$row" | cut -f4)
-            gid="xtv-pr-${repo//\//-}-${num}-rerequest"
-            notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "Re-requested review" -subtitle "$repo #$num" -message "${title//\"/\\\"}" -open "$url" -sound default
-            # Mark as notified with timestamp to track this specific re-request event
-            echo "$notif_key" >>"$NOTIFIED_FILE"
-          fi
-        done
-    fi
-
-    # Persist current map (prime if first run)
-
-    # Persist re-request hits for next run's menu
-    mv "$REREQ_HITS_TMP" "$REREQ_HITS_FILE" 2>/dev/null || cp "$REREQ_HITS_TMP" "$REREQ_HITS_FILE" 2>/dev/null || true
-
-    mv "$CURR_REREQ_FILE" "$STATE_REREQ_FILE" 2>/dev/null || cp "$CURR_REREQ_FILE" "$STATE_REREQ_FILE" 2>/dev/null || true
+    notify_rerequested "$CURRENT_OPEN_FILE" "$NOTIFIED_FILE" "$STATE_DIR" "$STATE_REREQ_FILE" "$REREQ_HITS_FILE"
   fi
 
   # Approval dismissed notifications (built during render)
   notify_approval_dismissed "$CURRENT_OPEN_FILE" "$NOTIFIED_FILE" "$DISMISSED_HITS_FILE"
 
   notify_new_comments "$CURRENT_OPEN_FILE" "$NOTIFIED_FILE"
+
+  # Garbage-collect old ledger entries to prevent unbounded growth
+  if [ "${NOTIFY_LEDGER_GC:-1}" = "1" ]; then
+    ledger_gc "$CURRENT_OPEN_FILE"
+  fi
+
   notify_queue "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE" "$STATE_DIR"
   notify_merged "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE"
+  log_info "notifications: end"
 fi
 
 # Restore strict error handling after notifications

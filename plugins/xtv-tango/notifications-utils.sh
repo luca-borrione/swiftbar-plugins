@@ -2,9 +2,97 @@
 # shellcheck disable=SC2016
 
 # =============================================================================
-# NOTIFICATION FUNCTIONS (migrated from notifications.sh)
+# NOTIFICATION FUNCTIONS
 # =============================================================================
 # Functions for sending macOS notifications about PR events
+# Simple notification ledger helpers (eventKey -> last_ts)
+# Format per line: key<TAB>timestamp, where key is like "new:owner/repo#123"
+
+# Logging shims (no-op if main script hasn't defined log_* yet)
+if ! declare -F log_info >/dev/null 2>&1; then log_info() { :; }; fi
+if ! declare -F log_warn >/dev/null 2>&1; then log_warn() { :; }; fi
+if ! declare -F log_debug >/dev/null 2>&1; then log_debug() { :; }; fi
+
+# Return success only if the timestamp looks like ISO-8601 UTC (YYYY-MM-DDTHH:MM:SSZ)
+_is_iso_utc() {
+  case "$1" in
+  ????-??-??T??:??:??Z) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+ledger_get_ts() {
+  local key="$1"
+  local file="${NOTIFY_LEDGER_FILE:-}"
+  [ -n "$file" ] && [ -f "$file" ] || {
+    echo ""
+    return 1
+  }
+  # Only consider well-formed rows; ignore garbage
+  awk -F'\t' -v k="$key" '($1==k) && ($2 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/) {print $2; found=1} END{if(!found) exit 1}' "$file" 2>/dev/null || echo ""
+}
+
+ledger_set_ts() {
+  local key="$1"
+  local ts="$2"
+  local file="${NOTIFY_LEDGER_FILE:-}"
+  # Basic validation: non-empty, key contains repo#num, ts is ISO
+  [[ -n "$file" && -n "$key" && "$key" == *:*#* ]] || return 1
+  if ! _is_iso_utc "$ts"; then
+    log_warn "ledger_set_ts: skip invalid ts '$ts' for key '$key'"
+    return 0
+  fi
+  # Avoid obviously bad keys like null#null
+  case "$key" in *null#null* | *#null* | null*)
+    log_warn "ledger_set_ts: skip invalid key '$key'"
+    return 0
+    ;;
+  esac
+
+  local tmp="${file}.tmp.$$"
+  if [ -f "$file" ]; then
+    awk -F'\t' -v k="$key" -v v="$ts" 'BEGIN{u=0} $1==k {print k"\t"v; u=1; next} {if($0!="") print} END{if(u==0) print k"\t"v}' "$file" 2>/dev/null >"$tmp" || echo -e "$key\t$ts" >"$tmp"
+  else
+    echo -e "$key\t$ts" >"$tmp"
+  fi
+  mv "$tmp" "$file" 2>/dev/null || cp "$tmp" "$file"
+}
+
+# Garbage-collect ledger entries.
+# Keep ONLY entries for PRs that are currently open (no time-based retention).
+ledger_gc() {
+  local current_file="$1"
+  local file="${NOTIFY_LEDGER_FILE:-}"
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+
+  # Build set of current PR keys (repo#num)
+  local curkeys
+  curkeys=$(mktemp 2>/dev/null || echo "/tmp/xtv-ledger-curkeys.$$")
+  if [ -n "$current_file" ] && [ -s "$current_file" ]; then
+    awk -F'\t' '{print $1"#"$2}' "$current_file" | sort -u >"$curkeys"
+  else
+    : >"$curkeys"
+  fi
+
+  # Keep only rows with a valid key and ISO timestamp where PR is open now
+  local tmp="${file}.gc.$$"
+  before=$(wc -l <"$file" 2>/dev/null || echo 0)
+  awk -F'\t' -v cur="$curkeys" '
+    BEGIN{ while ((getline k < cur) > 0) { seen[k]=1 } close(cur) }
+    {
+      key=$1; ts=$2;
+      if (key=="" || ts=="") next
+      if (ts !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/) next
+      pr=key; sub(/^[^:]*:/, "", pr)
+      if (seen[pr]) print key"\t"ts
+    }
+  ' "$file" >"$tmp"
+  mv "$tmp" "$file" 2>/dev/null || cp "$tmp" "$file"
+  open_count=$(wc -l <"$curkeys" 2>/dev/null || echo 0)
+  after=$(wc -l <"$file" 2>/dev/null || echo 0)
+  log_info "ledger_gc: open_now=${open_count} kept=${after}/${before} file=$file"
+  rm -f "$curkeys"
+}
 
 # Notify about new PRs
 notify_new_prs() {
@@ -18,9 +106,16 @@ notify_new_prs() {
     while IFS= read -r key; do
       repo="${key%%#*}"
       num="${key##*#}"
-      notif_key="new:${repo}#${num}"
-      # Skip if already notified
-      if grep -q -F -x "$notif_key" "$notified_file" 2>/dev/null; then
+      # Determine event timestamp from PR creation time
+      created_at=$(gh api "repos/$repo/pulls/$num" --jq '.created_at // empty' 2>/dev/null || echo "")
+      event_ts="${created_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+      if ! _is_iso_utc "$event_ts"; then
+        event_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      fi
+
+      ledger_key="new:${repo}#${num}"
+      last_sent=$(ledger_get_ts "$ledger_key")
+      if [ -n "$last_sent" ] && { [ "$last_sent" = "$event_ts" ] || [ "$last_sent" \> "$event_ts" ]; }; then
         continue
       fi
       # Lookup full row in CURRENT_OPEN_FILE
@@ -32,7 +127,7 @@ notify_new_prs() {
       [ -z "$author" ] && author="unknown"
       gid="xtv-pr-new-${repo//\//-}-${num}"
       notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "New PR by $author" -subtitle "$repo #$num" -message "$title" -open "$url" -sound default
-      echo "$notif_key" >>"$notified_file"
+      ledger_set_ts "$ledger_key" "$event_ts"
     done
 }
 
@@ -119,7 +214,7 @@ notify_rerequested() {
             }
           }
         }
-      }' 2>/dev/null | jq -r '.data.repository.pullRequest.timelineItems.nodes[-1].createdAt // empty' 2>/dev/null)
+      }' 2>/dev/null | jq -r '.data.repository.pullRequest.timelineItems.nodes[-1].createdAt // empty' 2>/dev/null || echo "")
     if [ -n "$last_ts" ]; then
       printf "%s#%s\t%s\n" "$repo" "$num" "$last_ts" >>"$CURR_REREQ_FILE"
     fi
@@ -132,8 +227,9 @@ notify_rerequested() {
         if [ "$curr_ts" \> "$prev_ts" ]; then
           repo="${key%%#*}"
           num="${key##*#}"
-          notif_key="rereq:${repo}#${num}:${curr_ts}"
-          if grep -q -F -x "$notif_key" "$notified_file" 2>/dev/null; then
+          ledger_key="rereq:${repo}#${num}"
+          last_sent=$(ledger_get_ts "$ledger_key")
+          if [ -n "$last_sent" ] && { [ "$last_sent" = "$curr_ts" ] || [ "$last_sent" \> "$curr_ts" ]; }; then
             continue
           fi
           row=$(awk -F'\t' -v r="$repo" -v n="$num" '$1==r && $2==n {print; exit}' "$current_file")
@@ -144,7 +240,7 @@ notify_rerequested() {
           url=$(echo "$row" | cut -f4)
           gid="xtv-pr-${repo//\//-}-${num}-rereq"
           notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "Review re-requested" -subtitle "$repo #$num" -message "$title" -open "$url" -sound default
-          echo "$notif_key" >>"$notified_file"
+          ledger_set_ts "$ledger_key" "$curr_ts"
         fi
       done
   fi
@@ -166,8 +262,11 @@ notify_approval_dismissed() {
 
   while IFS=$'\t' read -r repo num ts; do
     [ -n "$repo" ] && [ -n "$num" ] && [ -n "$ts" ] || continue
-    local notif_key="approval-dismissed:${repo}#${num}:${ts}"
-    if grep -q -F -x "$notif_key" "$notified_file" 2>/dev/null; then
+
+    local ledger_key="approval-dismissed:${repo}#${num}"
+    local last_sent
+    last_sent=$(ledger_get_ts "$ledger_key")
+    if [ -n "$last_sent" ] && { [ "$last_sent" = "$ts" ] || [ "$last_sent" \> "$ts" ]; }; then
       continue
     fi
     # Lookup title/url from current index; fallback to constructing URL
@@ -182,7 +281,7 @@ notify_approval_dismissed() {
     fi
     local gid="xtv-pr-${repo//\//-}-${num}-approval-dismissed"
     notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "Your approval was dismissed" -subtitle "$repo #$num" -message "${title//\"/\\\"}" -open "$url" -sound default
-    echo "$notif_key" >>"$notified_file"
+    ledger_set_ts "$ledger_key" "$ts"
   done <"$hits_file"
 
   # Clear hits once processed (NOTIFIED_FILE prevents duplicates across runs)
@@ -203,7 +302,7 @@ notify_new_comments() {
     [ -z "$comment_id" ] && continue
 
     # Get the last notified comment ID for this PR
-    last_comment_id=$(grep -E "^comment:${pr_key}:" "$notified_file" 2>/dev/null | tail -1 | cut -d: -f3)
+    last_comment_id=$(awk -F: -v k="comment:${pr_key}:" '$0 ~ "^"k { id=$3 } END{ if(id!="") print id }' "$notified_file" 2>/dev/null || true)
 
     # Check if this is a NEW comment (different ID from last notified)
     if [ -n "$last_comment_id" ] && [ "$comment_id" != "$last_comment_id" ]; then
@@ -305,23 +404,25 @@ notify_merged() {
     while IFS= read -r key; do
       repo="${key%%#*}"
       num="${key##*#}"
-      notif_key="merged:${repo}#${num}"
-      if grep -q -F -x "$notif_key" "$notified_file" 2>/dev/null; then
+      # Check merged timestamp and use ledger for dedupe
+      merged_at=$(gh api "repos/$repo/pulls/$num" --jq '.merged_at // empty' 2>/dev/null || echo "")
+      if [ -z "$merged_at" ] || ! _is_iso_utc "$merged_at"; then
         continue
       fi
-      # Verify it was merged (not just closed)
-      state=$(gh api "repos/$repo/pulls/$num" --jq '.state + ":" + (.merged_at // "null")' 2>/dev/null || echo "unknown:null")
-      if [[ "$state" == closed:* ]] && [[ "$state" != *:null ]]; then
-        # Fetch and sanitize title to a single line; escape quotes for notify
-        title_raw=$(gh api "repos/$repo/pulls/$num" --jq '.title' 2>/dev/null || true)
-        if [ -z "$title_raw" ]; then title_raw="PR #$num"; fi
-        title=$(echo "$title_raw" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
-        url="https://github.com/$repo/pull/$num"
-        # Use an event-specific group to avoid stacking with other events
-        gid="xtv-pr-merged-${repo//\//-}-${num}"
-        notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "PR Merged" -subtitle "$repo #$num" -message "$title" -open "$url" -sound default
-        echo "$notif_key" >>"$notified_file"
+
+      ledger_key="merged:${repo}#${num}"
+      last_sent=$(ledger_get_ts "$ledger_key")
+      if [ -n "$last_sent" ] && { [ "$last_sent" = "$merged_at" ] || [ "$last_sent" \> "$merged_at" ]; }; then
+        continue
       fi
+      # Fetch and sanitize title; escape quotes for notify
+      title_raw=$(gh api "repos/$repo/pulls/$num" --jq '.title' 2>/dev/null || true)
+      [ -z "$title_raw" ] && title_raw="PR #$num"
+      title=$(echo "$title_raw" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
+      url="https://github.com/$repo/pull/$num"
+      gid="xtv-pr-merged-${repo//\//-}-${num}"
+      notify -ignoreDnD YES -group "$gid" -sender com.ameba.SwiftBar -title "PR Merged" -subtitle "$repo #$num" -message "$title" -open "$url" -sound default
+      ledger_set_ts "$ledger_key" "$merged_at"
     done
 }
 

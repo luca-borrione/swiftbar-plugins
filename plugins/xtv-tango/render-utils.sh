@@ -173,7 +173,8 @@ render_and_update_pagination() {
           if [ "${CHECK_MY_REVIEW_DISMISSED:-0}" = "1" ] && [ "$my_state" = "DISMISSED" ]; then
             label="${APPROVAL_DISMISSED_MARK:-} $label"
             if [ -n "${DISMISSED_HITS_FILE:-}" ] && [ -n "$my_ts" ]; then
-              printf "%s\t%s\n" "$repo" "$number" >>"$DISMISSED_HITS_FILE" 2>/dev/null || true
+              # Record repo, number and the dismissal timestamp for dedupe via ledger
+              printf "%s\t%s\t%s\n" "$repo" "$number" "$my_ts" >>"$DISMISSED_HITS_FILE" 2>/dev/null || true
             fi
           fi
         fi
