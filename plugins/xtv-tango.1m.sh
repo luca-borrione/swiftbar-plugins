@@ -108,12 +108,6 @@ RECENTLY_MERGED_DAYS=7
 # Cache TTL for team members list (seconds). Default: 24 hours
 export TEAM_MEMBERS_CACHE_TTL=86400
 
-# Concurrency for "Raised by" per-author fetch (parallel gh calls); must be a positive integer
-export RAISED_BY_CONCURRENCY=12
-
-# Concurrency for "Requested to" totals-count across teams; must be a positive integer
-export REQUESTEDCONCURRENCY=12
-
 # Marks for metrics/state; customize as you like
 export APPROVAL_DISMISSED_MARK="⚪"
 export APPROVAL_MARK="✅"
@@ -246,9 +240,6 @@ export QUEUE_STATE_FILE QUEUE_STATE_NEXT
 CURRENT_SECTION=""
 export CURRENT_SECTION
 
-requested_MAX_PAR="${REQUESTEDCONCURRENCY:-8}"
-if ! [[ "$requested_MAX_PAR" =~ ^[1-9][0-9]*$ ]]; then requested_MAX_PAR=8; fi
-
 # Personal sections before team sections
 # 0.a Raised by Me (my authored PRs)
 if [ "${SHOW_RAISED_BY_ME_SECTION:-0}" = "1" ]; then
@@ -356,25 +347,6 @@ if [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; then
 fi
 
 if [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; then
-  TP_COUNT=0
-  # Run total counts concurrently across all configured teams
-  TOTAL_DIR="$(mktemp -d)"
-  TOTAL_PIDS=()
-  for team in "${REQUESTED_TO_TEAMS_ARRAY[@]}"; do
-    REPO_Q=$(build_repo_qualifier)
-    q="is:pr is:open team-review-requested:${team}${REPO_Q}"
-    f="$TOTAL_DIR/${team//\//_}.txt"
-    TP_COUNT=$((TP_COUNT + 1))
-    if [ $((TP_COUNT % requested_MAX_PAR)) -eq 0 ]; then
-      for pid in "${TOTAL_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done
-      TOTAL_PIDS=()
-    fi
-    (gh api graphql -f query='query($q:String!){ search(query:$q, type: ISSUE){ issueCount } }' -F q="$q" --jq '.data.search.issueCount' >"$f" 2>/dev/null || echo "0" >"$f") &
-    TOTAL_PIDS+=($!)
-  done
-fi
-
-if [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; then
   # 2.
   # Show the list of PRs per configured team
 
@@ -438,20 +410,13 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
 
     RB_NODES_FILE="$(mktemp)"
 
-    # Parallelize per-author queries to speed up Raised by section
     RB_DIR="$(mktemp -d)"
-    RB_PIDS=()
-    RB_MAX_PAR="${RAISED_BY_CONCURRENCY:-8}"
-    # Validate positive integer; fallback to 8 if invalid
-    if ! [[ "$RB_MAX_PAR" =~ ^[1-9][0-9]*$ ]]; then RB_MAX_PAR=8; fi
-    RB_COUNT=0
     for u in $MEMBERS; do
       # Build server-side qualifiers using watched repos
       REPO_Q=$(build_repo_qualifier)
 
       RQ="is:pr is:open author:${u}${REPO_Q}"
-      (
-        gh api graphql -F q="$RQ" -F n="$N" -f query='
+      gh api graphql -F q="$RQ" -F n="$N" -f query='
           query($q:String!,$n:Int!){
             search(query:$q,type:ISSUE,first:$n){
               edges{node{... on PullRequest{
@@ -468,17 +433,8 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
                 labels(first:20){nodes{name}}
               }}}
             }}' \
-          --jq '.data.search.edges[].node' 2>/dev/null >"$RB_DIR/$u.json" || true
-      ) &
-      RB_PIDS+=($!)
-      RB_COUNT=$((RB_COUNT + 1))
-      if [ $((RB_COUNT % RB_MAX_PAR)) -eq 0 ]; then
-        for pid in "${RB_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done
-        RB_PIDS=()
-      fi
+        --jq '.data.search.edges[].node' 2>/dev/null >"$RB_DIR/$u.json" || true
     done
-    # Wait for remaining jobs
-    for pid in "${RB_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done
     # Concatenate all results
     if ls "$RB_DIR"/*.json >/dev/null 2>&1; then
       cat "$RB_DIR"/*.json >>"$RB_NODES_FILE" 2>/dev/null || true
@@ -555,15 +511,6 @@ if [ "${SHOW_ALL_SECTION:-1}" = "1" ]; then
   rm -f "$TMP_ALL_MENU" 2>/dev/null || true
 fi
 
-# Wait for total count jobs, then print header and buffered list
-for pid in "${TOTAL_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done
-TOTAL=0
-for f in "$TOTAL_DIR"/*.txt; do
-  v=$(cat "$f" 2>/dev/null || echo "0")
-  [[ "$v" =~ ^[0-9]+$ ]] || v=0
-  TOTAL=$((TOTAL + v))
-done
-
 # Bar Title for when logged in: just an icon and the total PR count
 if [ "${SHOW_ALL_SECTION:-1}" = "1" ]; then
   echo "🔀 ${ALL_TOTAL:-0}"
@@ -583,4 +530,3 @@ fi
 
 # Cleanup temp files (menu buffers)
 rm -f "$TMP_MENU" "$REQUESTED_FILE" "$SEEN_PRS_FILE" 2>/dev/null || true
-rm -rf "$TOTAL_DIR" 2>/dev/null || true

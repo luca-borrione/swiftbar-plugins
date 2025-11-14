@@ -35,8 +35,7 @@ render_and_update_pagination() {
           avatar: (.author.avatarUrl // ""),
           comments: (.comments.totalCount // 0),
           reviewDecision: (.reviewDecision // ""),
-          labels: ((.labels.nodes // []) | map(.name)),
-          viewerReacted: false
+          labels: ((.labels.nodes // []) | map(.name))
         }
       | .title |= (
           (. // "") | gsub("\r";"") | gsub("\n";" ")
@@ -67,7 +66,7 @@ render_and_update_pagination() {
          end)
          | (if $dir == "desc" then reverse else . end)
         )[]
-        | "__PR__\t\(.author)\t\(.avatar)\t\(.url)\t\(.repo)\t\(.number)\t\(.updatedAt)\t\(.comments)\t\(.prefix)\(.title)\t\(.isInMergeQueue)\t\(.reviewDecision)\t\(.viewerReacted)\t\(.labels | join("|"))" )
+        | "__PR__\t\(.author)\t\(.avatar)\t\(.url)\t\(.repo)\t\(.number)\t\(.updatedAt)\t\(.comments)\t\(.prefix)\(.title)\t\(.isInMergeQueue)\t\(.reviewDecision)\t\(.labels | join("|"))" )
   '
   )
 
@@ -77,7 +76,7 @@ render_and_update_pagination() {
 
   while IFS= read -r line; do
     if [[ "$line" == $'__PR__\t'* ]]; then
-      IFS=$'\t' read -r _ login avatar url repo number updated comments title in_queue review_decision viewer_reacted labels <<<"$line"
+      IFS=$'\t' read -r _ login avatar url repo number updated comments title in_queue review_decision labels <<<"$line"
 
       # Debug: log parsed PR line before dedupe
 
@@ -113,20 +112,20 @@ render_and_update_pagination() {
   # Second pass: render with corrected counts
   TMP_OUT=$(mktemp)
   idx=0
-  MAX_PAR="${XTV_CONC:-6}"
   SEEN_HEADER=0
   ALL_TOTAL=0
+  MAX_PAR=6
 
   while IFS= read -r line; do
     if [[ "$line" == $'__PR__\t'* ]]; then
-      IFS=$'\t' read -r _ login avatar url repo number updated comments title in_queue review_decision viewer_reacted labels <<<"$line"
+      IFS=$'\t' read -r _ login avatar url repo number updated comments title in_queue review_decision labels <<<"$line"
 
       local_idx=$idx
       idx=$((idx + 1))
       (
-        # Get all PR data in one call (conversation, approvals, latest comment)
+        # Get all PR data in one call (conversation and approvals)
         pr_data=$(get_pr_data_combined "$repo" "$number" "$updated" 2>/dev/null)
-        IFS=$'\t' read -r conv appr comment_id comment_author comment_body <<<"$pr_data"
+        IFS=$'\t' read -r conv appr <<<"$pr_data"
         if ! [[ "$conv" =~ ^[0-9]+$ ]]; then conv="$comments"; fi
         if ! [[ "$appr" =~ ^[0-9]+$ ]]; then appr=0; fi
 
@@ -156,7 +155,7 @@ render_and_update_pagination() {
           printf "%s\t%s\n" "$repo" "$number" >>"$QUEUE_STATE_NEXT" 2>/dev/null || true
         fi
 
-        # Simple, current-run-only review marks (no notification or history state)
+        # Simple, current-run-only review marks)
         if [ "$section" = "requested_to_me" ] || [ "$section" = "participated" ] || [ "$section" = "all" ]; then
           # Derive my latest review state and whether I have ever approved this PR
           rev_out=$(get_my_review_status "$repo" "$number" "$updated" 2>/dev/null || printf "\t\tfalse\n")
@@ -207,21 +206,26 @@ render_and_update_pagination() {
         fi
 
       ) >>"$TMP_OUT" &
-      # Throttle concurrency
-      while (($(jobs -pr | wc -l | tr -d ' ') >= MAX_PAR)); do sleep 0.05; done
+      # Throttle background jobs to avoid too many concurrent GitHub calls
+      while (($(jobs -pr | wc -l | tr -d ' ') >= MAX_PAR)); do
+        sleep 0.05
+      done
     else
+      # Flush pending PR entries before starting a new header block or separator
+      # Ensure all background PR jobs have finished before flushing
+      for pid in $(jobs -pr); do
+        wait "$pid" 2>/dev/null || true
+      done
+      if [[ -s "$TMP_OUT" ]]; then
+        sort -n -t $'\t' -k1,1 "$TMP_OUT" | cut -f2-
+        : >"$TMP_OUT"
+      fi
+
       # Ignore any explicit separator tokens from jq (we'll insert ourselves)
       if [[ "$line" == "__SEP__" ]]; then
         continue
       fi
-      # Flush pending PR entries before starting a new header block
-      if [[ -n "$line" ]]; then
-        for pid in $(jobs -pr); do wait "$pid" 2>/dev/null || true; done
-        if [[ -s "$TMP_OUT" ]]; then
-          sort -n -t $'\t' -k1,1 "$TMP_OUT" | cut -f2-
-          : >"$TMP_OUT"
-        fi
-      fi
+
       # Update the count in the header line
       # Extract repo name and original (pre-dedupe) count from header: "REPO: COUNT | href=..."
       if [[ "$line" =~ ^([^:]+):[[:space:]]*([0-9]+)[[:space:]]*\|(.*)$ ]]; then
@@ -256,14 +260,12 @@ render_and_update_pagination() {
     fi
   done <"$TMP_FILTERED"
   # Final flush
-  for pid in $(jobs -pr); do wait "$pid" 2>/dev/null || true; done
+  # Wait for any remaining background PR jobs
+  for pid in $(jobs -pr); do
+    wait "$pid" 2>/dev/null || true
+  done
   if [[ -s "$TMP_OUT" ]]; then
     sort -n -t $'\t' -k1,1 "$TMP_OUT" | cut -f2-
   fi
   rm -f "$TMP_OUT" "$TMP_FILTERED" "$TMP_COUNTS" 2>/dev/null || true
-  # Export pagination variables so they're available to fetch_and_render_prs
-  HAS_NEXT=$(echo "$RESP" | jq -r '.data.search.pageInfo.hasNextPage')
-  export HAS_NEXT
-  CURSOR=$(echo "$RESP" | jq -r '.data.search.pageInfo.endCursor')
-  export CURSOR
 }

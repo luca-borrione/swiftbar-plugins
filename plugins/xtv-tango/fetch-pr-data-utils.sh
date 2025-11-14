@@ -7,7 +7,7 @@
 # ============================================================================
 
 # Combined GraphQL function to fetch all PR data in one call
-# Returns: conv_count<TAB>approval_count<TAB>latest_comment_id<TAB>latest_comment_author<TAB>latest_comment_body
+# Returns: conv_count<TAB>approval_count
 get_pr_data_combined() {
   local repo="$1" number="$2" updatedAt="$3"
   # v2 cache (schema changed to count inline review comments more accurately)
@@ -35,16 +35,10 @@ get_pr_data_combined() {
     query($owner:String!,$name:String!,$number:Int!){
       repository(owner:$owner,name:$name){
         pullRequest(number:$number){
-          comments(last:1){
-            nodes{
-              id
-              author{login}
-              body
-            }
+          comments{
             totalCount
           }
           reviewThreads(first:100){
-            totalCount
             nodes{
               comments{
                 totalCount
@@ -53,8 +47,6 @@ get_pr_data_combined() {
           }
           reviews(last:100){
             nodes{
-              author{login}
-              state
               body
             }
           }
@@ -69,7 +61,7 @@ get_pr_data_combined() {
     }' 2>/dev/null | jq -r '
       .data.repository.pullRequest as $pr |
       if $pr == null then
-        "0\t0\t\t\t"
+        "0\t0"
       else
         # Total comments in review threads (sum of comments.totalCount over all threads)
         (reduce (($pr.reviewThreads.nodes // [])[]? ) as $t (0; . + ($t.comments.totalCount // 0))) as $threadComments |
@@ -80,15 +72,9 @@ get_pr_data_combined() {
         # Approval count: unique approvers with latest state APPROVED
         ([($pr.latestReviews.nodes // []) | reverse | reduce .[] as $r ({}; .[$r.author.login] //= $r.state) | to_entries[] | select(.value == "APPROVED")] | length) as $appr |
 
-        # Latest comment info (for notifications)
-        (($pr.comments.nodes // [])[0] // {}) as $comment |
-        ($comment.id // "") as $cid |
-        (($comment.author // {}).login // "") as $cauthor |
-        ($comment.body // "") as $cbody |
-
-        "\($conv)\t\($appr)\t\($cid)\t\($cauthor)\t\($cbody)"
+        "\($conv)\t\($appr)"
       end
-    ' 2>/dev/null || echo $'0\t0\t\t\t')
+    ' 2>/dev/null || echo $'0\t0')
 
   # Validate result (at minimum we need conv and appr counts)
   if [[ "$result" =~ ^[0-9]+$'\t'[0-9]+ ]]; then
@@ -97,68 +83,8 @@ get_pr_data_combined() {
     echo "$result"
   else
     # Return defaults if query failed
-    echo $'0\t0\t\t\t'
+    echo $'0\t0'
   fi
-}
-
-# Return 1 if my latest review is APPROVED (and not superseded by CHANGES_REQUESTED/DISMISSED), else 0
-get_my_approval_flag() {
-  local repo="$1" number="$2" updatedAt="$3"
-  local cache_dir="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-my-approval-v1"
-  mkdir -p "$cache_dir"
-  local key="${repo//\//_}-${number}.txt"
-  local file="$cache_dir/$key"
-
-  if [[ -s "$file" ]]; then
-    local cached_updated cached_flag
-    IFS=$'\t' read -r cached_updated cached_flag <"$file" || true
-    if [[ "$cached_updated" == "$updatedAt" && "$cached_flag" =~ ^[01]$ ]]; then
-      echo "$cached_flag"
-      return 0
-    fi
-  fi
-
-  local owner="${repo%%/*}"
-  local rname="${repo#*/}"
-  local viewer="${MY_LOGIN:-}"
-
-  local me_login_used mine_state latest_count flag dbg_out rest_state
-  dbg_out=$(gh api graphql -F owner="$owner" -F name="$rname" -F number="$number" -f query='
-    query($owner:String!,$name:String!,$number:Int!){
-      viewer { login }
-      repository(owner:$owner,name:$name){
-        pullRequest(number:$number){
-          latestReviews(last:100){ nodes{ author{login} state } }
-        }
-      }
-    }' 2>/dev/null | jq -r --arg viewer "$viewer" '
-      . as $root |
-      ($root.data.viewer.login // "") as $viewerLogin |
-      $root.data.repository.pullRequest as $pr |
-      if $pr == null then
-        ("\t\t0\t0")
-      else
-        (($viewer // "") | length) as $len |
-        (if $len > 0 then $viewer else $viewerLogin end) as $meLogin |
-        (($pr.latestReviews.nodes // [])) as $nodes |
-        (reduce $nodes[] as $r ({}) (.[(($r.author.login // "") | ascii_downcase)] = ($r.state // ""))) as $latest |
-        ($latest[($meLogin | ascii_downcase)] // "") as $mine |
-        (if $mine == "APPROVED" then "1" else "0" end) as $flag |
-        "\($meLogin)\t\($mine)\t\($flag)\t\($nodes|length)"
-      end
-    ' 2>/dev/null)
-  IFS=$'\t' read -r me_login_used mine_state flag latest_count <<<"$dbg_out"
-
-  # Fallback via REST: verify latest state per user
-  if [[ "$flag" != "1" && (-z "$me_login_used" || "$latest_count" = "0") ]]; then
-    rest_state=$(gh api "repos/$repo/pulls/$number/reviews?per_page=100" \
-      --jq 'reverse | reduce .[] as $r ({}; .[$r.user.login] //= ($r.state // "")) | .["'"${viewer:-}"'"] // ""' 2>/dev/null || echo "")
-    if [[ "$rest_state" == "APPROVED" ]]; then flag="1"; elif [[ "$flag" != "1" ]]; then flag="0"; fi
-  fi
-
-  if [[ "$flag" != "1" && "$flag" != "0" ]]; then flag="0"; fi
-  printf "%s\t%s\n" "$updatedAt" "$flag" >"$file.tmp" 2>/dev/null && mv "$file.tmp" "$file" 2>/dev/null || true
-  echo "$flag"
 }
 
 # Return my latest review state (APPROVED/CHANGES_REQUESTED/COMMENTED/DISMISSED), its timestamp, and whether I have ever approved this PR

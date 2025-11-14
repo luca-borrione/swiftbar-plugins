@@ -227,9 +227,8 @@ fetch_team_prs() {
 
   local repo_q
   repo_q=$(build_repo_qualifier)
-  local query
-  query="is:pr is:open team-review-requested:${team_slug}${repo_q}"
-  # Mark rows as belonging to the team section (used for state/notifications)
+  local query="is:pr is:open team-review-requested:${team_slug}${repo_q}"
+
   export COLLECT_REQUESTED_TO_TEAM="1"
   fetch_and_render_prs "$query" "is:pr is:open team-review-requested:${team_slug}" "$output_file"
   export COLLECT_REQUESTED_TO_TEAM="0"
