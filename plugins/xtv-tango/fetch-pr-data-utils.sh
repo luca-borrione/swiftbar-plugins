@@ -10,7 +10,8 @@
 # Returns: conv_count<TAB>approval_count<TAB>latest_comment_id<TAB>latest_comment_author<TAB>latest_comment_body
 get_pr_data_combined() {
   local repo="$1" number="$2" updatedAt="$3"
-  local cache_dir="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-pr-data"
+  # v2 cache (schema changed to count inline review comments more accurately)
+  local cache_dir="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-pr-data-v2"
   mkdir -p "$cache_dir"
   local key="${repo//\//_}-${number}.txt"
   local file="$cache_dir/$key"
@@ -42,7 +43,14 @@ get_pr_data_combined() {
             }
             totalCount
           }
-          reviewThreads{totalCount}
+          reviewThreads(first:100){
+            totalCount
+            nodes{
+              comments{
+                totalCount
+              }
+            }
+          }
           reviews(last:100){
             nodes{
               author{login}
@@ -63,8 +71,11 @@ get_pr_data_combined() {
       if $pr == null then
         "0\t0\t\t\t"
       else
-        # Conversation count: comments + review threads + reviews with body
-        (($pr.comments.totalCount // 0) + ($pr.reviewThreads.totalCount // 0) + ([($pr.reviews.nodes // [])[] | select((.body // "") != "")] | length)) as $conv |
+        # Total comments in review threads (sum of comments.totalCount over all threads)
+        (reduce (($pr.reviewThreads.nodes // [])[]? ) as $t (0; . + ($t.comments.totalCount // 0))) as $threadComments |
+
+        # Conversation count: issue comments + inline review comments + reviews with body
+        (($pr.comments.totalCount // 0) + $threadComments + ([($pr.reviews.nodes // [])[] | select((.body // "") != "")] | length)) as $conv |
 
         # Approval count: unique approvers with latest state APPROVED
         ([($pr.latestReviews.nodes // []) | reverse | reduce .[] as $r ({}; .[$r.author.login] //= $r.state) | to_entries[] | select(.value == "APPROVED")] | length) as $appr |

@@ -20,9 +20,6 @@ set -euo pipefail
 # - jq [required]: JSON processing for GraphQL responses.
 #   Install: brew install jq
 #
-# - terminal-notifier [optional]: sends macOS notifications.
-#   Install: brew install terminal-notifier
-#
 # - curl [required]: downloads user avatars. Preinstalled on macOS.
 # - sips [required, built-in]: resizes avatar images. Preinstalled on macOS.
 #
@@ -79,39 +76,12 @@ source "${SCRIPT_DIR}/xtv-tango/fetch-pr-data-utils.sh"
 # shellcheck source=plugins/xtv-tango/render-utils.sh
 source "${SCRIPT_DIR}/xtv-tango/render-utils.sh"
 
-# shellcheck source=plugins/xtv-tango/notifications-utils.sh
-source "${SCRIPT_DIR}/xtv-tango/notifications-utils.sh"
-
 # shellcheck source=plugins/xtv-tango/fetch-prs-utils.sh
 source "${SCRIPT_DIR}/xtv-tango/fetch-prs-utils.sh"
 
 # # You need to ignore these in order to be able to pass your ssh to gh
 # unset GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
-
-# Optional: macOS notification wrapper (no-op if terminal-notifier is missing)
-notify() {
-  if command -v terminal-notifier >/dev/null 2>&1; then
-    # Strip any -sender <bundle-id> so clicks perform our -open action instead of activating an app
-    local args=()
-    while [ "$#" -gt 0 ]; do
-      if [ "$1" = "-sender" ]; then
-        shift 2
-        continue
-      fi
-      args+=("$1")
-      shift
-    done
-    terminal-notifier "${args[@]}" >/dev/null 2>&1 || true
-  else
-    return 0
-  fi
-}
-
-# File used to mark PRs that were re-requested in the previous run (for menu emoji)
-REREQ_HITS_FILE="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-tango.rerequest.hits"
-# File used to record "my approval dismissed" hits (for notifications)
-DISMISSED_HITS_FILE="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-tango.approvaldismissed.hits"
 
 # CONFIG:
 # ---------
@@ -135,18 +105,6 @@ SHOW_REQUESTED_TO_ME_SECTION=1
 # Section configuration
 RECENTLY_MERGED_DAYS=7
 
-# Notification preferences (1=on, 0=off)
-export NOTIFY_APPROVAL_DISMISSED=1
-export NOTIFY_MENTIONED=1
-export NOTIFY_MERGED=1
-export NOTIFY_NEW_COMMENT=1
-export NOTIFY_NEW_PR=1
-export NOTIFY_NEWLY_REQUESTED=1
-export NOTIFY_QUEUE_PARTICIPATED=1
-export NOTIFY_QUEUE_RAISED_BY_ME=1
-export NOTIFY_QUEUE=1
-export NOTIFY_REREQUESTED=1
-
 # Cache TTL for team members list (seconds). Default: 24 hours
 export TEAM_MEMBERS_CACHE_TTL=86400
 
@@ -156,19 +114,16 @@ export RAISED_BY_CONCURRENCY=12
 # Concurrency for "Requested to" totals-count across teams; must be a positive integer
 export REQUESTEDCONCURRENCY=12
 
-# Notification ledger: TSV file storing last-sent timestamps per event key (e.g., new:owner/repo#123) used to dedupe notifications
-# GC policy: keep entries only for PRs that are currently open; drop everything else (no time-based TTL)
-export NOTIFY_LEDGER_GC=1
-
 # Marks for metrics/state; customize as you like
 export APPROVAL_DISMISSED_MARK="⚪"
 export APPROVAL_MARK="✅"
 export APPROVED_BY_ME_MARK="🟢"
-export CHANGES_REQUESTED_MARK="⛔"
+export CHANGES_REQUESTED_MARK="🔴"
 export COMMENT_MARK="💬"
+export DO_NOT_REVIEW_MARK="🚫"
 export DRAFT_MARK="▪️"
-export QUEUE_MARK="🟠"
 export QUEUE_LEFT_MARK="🟡"
+export QUEUE_MARK="🟠"
 export REREQUESTED_MARK="🔄"
 export UNREAD_MARK="🔺"
 
@@ -185,9 +140,6 @@ NBCUDTC/xtv-bravo
 NBCUDTC/xtv-delta
 NBCUDTC/xtv-tango
 "
-
-# Previous-state file for queue-change decorations in render
-export PREV_STATE_FILE="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-tango.state.tsv"
 
 # Repos allowlist (limits searches to these repos when non-empty)
 WATCHED_REPOS="
@@ -244,10 +196,6 @@ else
   SHOW_RAISED_BY_TEAMS_SECTION=0
 fi
 
-# 1.
-# Accumulator for all open PRs across sections (for notifications)
-CURRENT_OPEN_FILE="$(mktemp)"
-
 # Allowlist of repos (owner/repo) to constrain searches when provided
 WATCHED_ARR=()
 while IFS= read -r line; do
@@ -289,6 +237,15 @@ export SEEN_PRS_FILE
 # Count seen PRs across open sections for menubar when All is hidden
 COUNT_SEEN=1
 
+# Track merge-queue membership between runs (for QUEUE_LEFT_MARK)
+QUEUE_STATE_FILE="$LOG_BASE_DIR/xtv-queue-state.txt"
+QUEUE_STATE_NEXT="$(mktemp)"
+export QUEUE_STATE_FILE QUEUE_STATE_NEXT
+
+# Current section label used by renderer to apply per-section decorations
+CURRENT_SECTION=""
+export CURRENT_SECTION
+
 requested_MAX_PAR="${REQUESTEDCONCURRENCY:-8}"
 if ! [[ "$requested_MAX_PAR" =~ ^[1-9][0-9]*$ ]]; then requested_MAX_PAR=8; fi
 
@@ -297,6 +254,7 @@ if ! [[ "$requested_MAX_PAR" =~ ^[1-9][0-9]*$ ]]; then requested_MAX_PAR=8; fi
 if [ "${SHOW_RAISED_BY_ME_SECTION:-0}" = "1" ]; then
   TMP_MYPR_MENU="$(mktemp)"
 
+  CURRENT_SECTION="raised_by_me"
   fetch_raised_by_me "$TMP_MYPR_MENU"
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_MYPR_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
@@ -315,10 +273,7 @@ fi
 if [ "${SHOW_MENTIONED_SECTION:-0}" = "1" ]; then
   TMP_MENTIONED_MENU="$(mktemp)"
 
-  # Collect current mentions for notification diffing
-  MENTIONED_CURR_FILE="$(mktemp)"
-
-  export MENTIONED_CURR_FILE
+  CURRENT_SECTION="mentioned"
   fetch_mentioned "$TMP_MENTIONED_MENU"
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_MENTIONED_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
@@ -337,6 +292,7 @@ fi
 if [ "${SHOW_REQUESTED_TO_ME_SECTION:-0}" = "1" ]; then
   TMP_ME_MENU="$(mktemp)"
 
+  CURRENT_SECTION="requested_to_me"
   fetch_requested_to_me "$TMP_ME_MENU"
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_ME_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
@@ -355,13 +311,8 @@ fi
 if [ "${SHOW_PARTICIPATED_SECTION:-0}" = "1" ]; then
   TMP_PART_MENU="$(mktemp)"
 
-  # Collect current participated keys for notification filtering (repo\tnum)
-  PARTICIPATED_CURR_FILE="$(mktemp)"
-  export COLLECT_PARTICIPATED="1"
-  export PARTICIPATED_FILE="$PARTICIPATED_CURR_FILE"
-
+  CURRENT_SECTION="participated"
   fetch_participated "$TMP_PART_MENU"
-  export COLLECT_PARTICIPATED="0"
 
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_PART_MENU" | awk '{s+=$1} END{print s+0}')
   [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
@@ -387,6 +338,7 @@ if [ "${SHOW_RECENTLY_MERGED_SECTION:-0}" = "1" ] &&
   # Do not count merged PRs into SEEN_PRS_FILE (menubar count when All is hidden)
   _PREV_COUNT_SEEN="${COUNT_SEEN:-1}"
   COUNT_SEEN=0
+  CURRENT_SECTION="recently_merged"
   fetch_recently_merged "$TMP_MERGED_MENU" "$RECENTLY_MERGED_DAYS"
   COUNT_SEEN="${_PREV_COUNT_SEEN}"
   cat "$TMP_MERGED_MENU" >>"$TMP_MENU"
@@ -431,6 +383,7 @@ if [ "${SHOW_REQUESTED_TO_TEAMS_SECTION:-0}" = "1" ]; then
     team_name="${team#*/}"
     TMP_TEAM_MENU="$(mktemp)"
 
+    CURRENT_SECTION="requested_to_team"
     fetch_team_prs "$team" "$TMP_TEAM_MENU"
     SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_TEAM_MENU" | awk '{s+=$1} END{print s+0}')
     [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
@@ -501,7 +454,19 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
         gh api graphql -F q="$RQ" -F n="$N" -f query='
           query($q:String!,$n:Int!){
             search(query:$q,type:ISSUE,first:$n){
-              edges{node{... on PullRequest{number title url updatedAt isDraft isInMergeQueue repository{nameWithOwner} author{login avatarUrl(size:28)} comments{totalCount} reviewDecision reactionGroups{viewerHasReacted}}}}
+              edges{node{... on PullRequest{
+                number
+                title
+                url
+                updatedAt
+                isDraft
+                isInMergeQueue
+                repository{nameWithOwner}
+                author{login avatarUrl(size:28)}
+                comments{totalCount}
+                reviewDecision
+                labels(first:20){nodes{name}}
+              }}}
             }}' \
           --jq '.data.search.edges[].node' 2>/dev/null >"$RB_DIR/$u.json" || true
       ) &
@@ -542,6 +507,7 @@ if [ "${SHOW_RAISED_BY_TEAMS_SECTION:-0}" = "1" ]; then
       HEADER_LINK_Q="is:pr is:open"
     fi
     HEADER_LINK_KIND="search"
+    CURRENT_SECTION="raised_by_team"
     render_and_update_pagination >>"$TMP_TEAM_MENU"
     unset HEADER_LINK_KIND
 
@@ -572,6 +538,7 @@ if [ "${SHOW_ALL_SECTION:-1}" = "1" ]; then
   # Compute the All total directly during rendering via a single accumulator
   ALL_TOTAL=0
   ACCUMULATE_ALL_TOTAL=1
+  CURRENT_SECTION="all"
   fetch_all "$TMP_ALL_MENU"
   unset ACCUMULATE_ALL_TOTAL
   SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_ALL_MENU" | awk '{s+=$1} END{print s+0}')
@@ -608,91 +575,12 @@ fi
 echo "---"
 cat "$TMP_MENU"
 
+# Persist merge-queue state for QUEUE_LEFT_MARK
+if [ -n "${QUEUE_STATE_FILE:-}" ] && [ -n "${QUEUE_STATE_NEXT:-}" ]; then
+  sort -u "$QUEUE_STATE_NEXT" >"${QUEUE_STATE_FILE}.tmp" 2>/dev/null && mv "${QUEUE_STATE_FILE}.tmp" "$QUEUE_STATE_FILE" 2>/dev/null || true
+  rm -f "$QUEUE_STATE_NEXT" 2>/dev/null || true
+fi
+
 # Cleanup temp files (menu buffers)
-rm -f "$TMP_MENU" "$UNREAD_FILE" "$REQUESTED_FILE" 2>/dev/null || true
+rm -f "$TMP_MENU" "$REQUESTED_FILE" "$SEEN_PRS_FILE" 2>/dev/null || true
 rm -rf "$TOTAL_DIR" 2>/dev/null || true
-
-# 3. Notifications across all sections (requested + raised-by)
-STATE_DIR="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}"
-STATE_FILE="$STATE_DIR/xtv-tango.state.tsv"
-NOTIFIED_FILE="$STATE_DIR/xtv-tango.notified.tsv"
-mkdir -p "$STATE_DIR"
-NOTIFY_LEDGER_FILE="$STATE_DIR/xtv-tango.notification-ledger.tsv"
-export NOTIFY_LEDGER_FILE
-
-touch "$STATE_FILE"
-touch "$NOTIFIED_FILE"
-touch "$NOTIFY_LEDGER_FILE"
-
-# Temporarily relax -e for notifications to avoid SwiftBar error panel on intermittent API issues
-set +e
-
-rows=$(wc -l <"$CURRENT_OPEN_FILE" 2>/dev/null || echo 0)
-log_info "notifications: begin current_rows=${rows}"
-
-# CURRENT_OPEN_FILE contains: repo\tnumber\ttitle\turl\tconv\tin_queue\trequested_in_team\tcomment_id\tcomment_author\tcomment_body\tdirect_to_me\tauthor_login
-if [ ! -s "$STATE_FILE" ]; then
-  # Prime state on first run; avoid spamming notifications
-  cp "$CURRENT_OPEN_FILE" "$STATE_FILE" 2>/dev/null || true
-
-else
-  # Build maps for current and previous
-  PREV="$STATE_FILE"
-
-  # Call notification functions
-  notify_new_prs "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE"
-  notify_newly_requested "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE" "$STATE_DIR"
-  # Mentions: compare current vs previous Mentioned list and notify on new entries
-  if [ -n "${MENTIONED_CURR_FILE:-}" ]; then
-    STATE_MENTION_FILE="${STATE_DIR}/xtv-tango.mention.state.tsv"
-    notify_mentions "$CURRENT_OPEN_FILE" "$STATE_MENTION_FILE" "$MENTIONED_CURR_FILE" "$NOTIFIED_FILE"
-  fi
-
-  # Re-requested review (migrated to ledger-based function)
-  if [ "${NOTIFY_REREQUESTED:-1}" = "1" ]; then
-    STATE_REREQ_FILE="${STATE_DIR}/xtv-tango.rerequest.state.tsv"
-    notify_rerequested "$CURRENT_OPEN_FILE" "$NOTIFIED_FILE" "$STATE_DIR" "$STATE_REREQ_FILE" "$REREQ_HITS_FILE"
-  fi
-
-  # Approval dismissed notifications (built during render)
-  notify_approval_dismissed "$CURRENT_OPEN_FILE" "$NOTIFIED_FILE" "$DISMISSED_HITS_FILE"
-
-  notify_new_comments "$CURRENT_OPEN_FILE" "$NOTIFIED_FILE"
-
-  # Garbage-collect old ledger entries to prevent unbounded growth
-  if [ "${NOTIFY_LEDGER_GC:-1}" = "1" ]; then
-    ledger_gc "$CURRENT_OPEN_FILE"
-  fi
-
-  notify_queue "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE" "$STATE_DIR"
-  notify_merged "$CURRENT_OPEN_FILE" "$PREV" "$NOTIFIED_FILE"
-  log_info "notifications: end"
-fi
-
-# Restore strict error handling after notifications
-set -e
-
-# Clean up old notification entries for PRs that no longer exist
-# Keep only entries for PRs that are currently open or were just closed (in PREV)
-if [ -s "$NOTIFIED_FILE" ]; then
-  NOTIFIED_TMP="$(mktemp)"
-
-  while IFS= read -r notif_line; do
-    # Extract repo#num from notification key (format: type:repo#num or type:repo#num:extra)
-    pr_key=$(echo "$notif_line" | sed -E 's/^[^:]+:([^:]+)(:.+)?$/\1/')
-    # Keep if PR exists in current or previous state
-    if grep -q -F "$pr_key" <(cut -f1,2 "$CURRENT_OPEN_FILE" "$PREV" 2>/dev/null | awk '{print $1"#"$2}') 2>/dev/null; then
-      echo "$notif_line" >>"$NOTIFIED_TMP"
-    fi
-  done <"$NOTIFIED_FILE"
-
-  mv "$NOTIFIED_TMP" "$NOTIFIED_FILE" 2>/dev/null || cp "$NOTIFIED_TMP" "$NOTIFIED_FILE" 2>/dev/null || true
-  rm -f "$NOTIFIED_TMP" 2>/dev/null || true
-fi
-
-# Clean up seen PRs tracking file
-rm -f "$SEEN_PRS_FILE" 2>/dev/null || true
-
-# Persist state for next run
-cp "$CURRENT_OPEN_FILE" "$STATE_FILE" 2>/dev/null || true
-rm -f "$CURRENT_OPEN_FILE" 2>/dev/null || true

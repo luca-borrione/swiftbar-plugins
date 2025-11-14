@@ -11,9 +11,6 @@ render_and_update_pagination() {
   # Only emoji symbols can be colored; the rest of the line remains normal
 
   local STREAM
-  # Get current user login (GraphQL viewer first; fallback to REST)
-  local my_login
-  my_login=$(gh api graphql -f query='query{viewer{login}}' --jq '.data.viewer.login' 2>/dev/null || gh api user --jq '.login' 2>/dev/null || echo "")
 
   # If RESP is not valid JSON, fall back to an empty search result to avoid jq parse errors
   if ! echo "$RESP" | jq -e . >/dev/null 2>&1; then
@@ -31,37 +28,23 @@ render_and_update_pagination() {
       --arg hdrSize "$REPO_HEADER_SIZE" \
       --arg hdrLink "$HEADER_LINK_Q" \
       --arg hdrLinkKind "${HEADER_LINK_KIND:-pulls}" \
-      --arg myLogin "$my_login" \
-      --arg filterReact "${FILTER_VIEWER_REACTED_ONLY:-false}" \
-      --arg filterIndividual "${FILTER_INDIVIDUAL_REVIEWS:-false}" '
+      --arg section "${CURRENT_SECTION:-}" '
     [ ((.data.search.edges // [])[] | .node)
       | {repo: .repository.nameWithOwner, number, title, url, isDraft, isInMergeQueue, updatedAt,
           author: (.author.login // "unknown"),
           avatar: (.author.avatarUrl // ""),
-          comments: ((.comments.totalCount // 0) + (((.reviewThreads.nodes // []) | map(.comments.totalCount // 0) | add) // 0)),
-      # viewerReacted comes from GraphQL reactionGroups.viewerHasReacted and
-      # indicates whether the viewer reacted to the PR BODY (not comment reactions).
+          comments: (.comments.totalCount // 0),
           reviewDecision: (.reviewDecision // ""),
-          viewerReacted: (((.reactionGroups // []) | map(.viewerHasReacted) | any) // false),
-          reviewRequests: (.reviewRequests.nodes // [])
+          labels: ((.labels.nodes // []) | map(.name)),
+          viewerReacted: false
         }
-      # Filter: if FILTER_INDIVIDUAL_REVIEWS is true, only keep PRs with individual review requests
-      | if $filterIndividual == "true" then
-          select(
-            (.reviewRequests | length) == 0 or
-            (.reviewRequests | map(select(.requestedReviewer.login == $myLogin)) | length) > 0
-          )
-        else
-          .
-        end
-      | if $filterReact == "true" then select(.viewerReacted == true) else . end
       | .title |= (
           (. // "") | gsub("\r";"") | gsub("\n";" ")
           | gsub("\\|";"¦")
         )
       | .prefix = (
           if .isDraft then "\($draft) DRAFT "
-          else if .isInMergeQueue then "\($queue) QUEUED "
+          else if (.isInMergeQueue and ($section != "recently_merged")) then "\($queue) QUEUED "
           else "" end end
         )
     ]
@@ -84,7 +67,7 @@ render_and_update_pagination() {
          end)
          | (if $dir == "desc" then reverse else . end)
         )[]
-        | "__PR__\t\(.author)\t\(.avatar)\t\(.url)\t\(.repo)\t\(.number)\t\(.updatedAt)\t\(.comments)\t\(.prefix)\(.title)\t\(.isInMergeQueue)\t\(.reviewDecision)\t\(.viewerReacted)" )
+        | "__PR__\t\(.author)\t\(.avatar)\t\(.url)\t\(.repo)\t\(.number)\t\(.updatedAt)\t\(.comments)\t\(.prefix)\(.title)\t\(.isInMergeQueue)\t\(.reviewDecision)\t\(.viewerReacted)\t\(.labels | join("|"))" )
   '
   )
 
@@ -94,16 +77,9 @@ render_and_update_pagination() {
 
   while IFS= read -r line; do
     if [[ "$line" == $'__PR__\t'* ]]; then
-      IFS=$'\t' read -r _ login avatar url repo number updated comments title in_queue review_decision viewer_reacted <<<"$line"
+      IFS=$'\t' read -r _ login avatar url repo number updated comments title in_queue review_decision viewer_reacted labels <<<"$line"
 
       # Debug: log parsed PR line before dedupe
-
-      # Mentioned section: collect for notifications when enabled (capture before dedup)
-      if [ "${MENTION_CAPTURE:-0}" = "1" ]; then
-        if [ -n "${MENTIONED_CURR_FILE:-}" ]; then
-          printf "%s\t%s\n" "$repo" "$number" >>"$MENTIONED_CURR_FILE"
-        fi
-      fi
 
       # Skip if this PR has already been displayed in a previous section
       if [ -n "${SEEN_PRS_FILE:-}" ] && [ -f "$SEEN_PRS_FILE" ] && grep -q -F -x "$url" "$SEEN_PRS_FILE" 2>/dev/null; then
@@ -143,7 +119,7 @@ render_and_update_pagination() {
 
   while IFS= read -r line; do
     if [[ "$line" == $'__PR__\t'* ]]; then
-      IFS=$'\t' read -r _ login avatar url repo number updated comments title in_queue review_decision viewer_reacted <<<"$line"
+      IFS=$'\t' read -r _ login avatar url repo number updated comments title in_queue review_decision viewer_reacted labels <<<"$line"
 
       local_idx=$idx
       idx=$((idx + 1))
@@ -154,95 +130,80 @@ render_and_update_pagination() {
         if ! [[ "$conv" =~ ^[0-9]+$ ]]; then conv="$comments"; fi
         if ! [[ "$appr" =~ ^[0-9]+$ ]]; then appr=0; fi
 
-        label="$title"
         b64=$(get_avatar_b64 "$login" "$avatar" 20)
         suffix=""
         if ((conv > 0)); then suffix+="  ${COMMENT_MARK:-}${conv}"; fi
         if ((appr > 0)); then suffix+="  ${APPROVAL_MARK:-}${appr}"; fi
 
+        # Front-of-title marks (DO_NOT_REVIEW label, CHANGES_REQUESTED, QUEUE_LEFT, APPROVED_BY_ME)
+        prefix_marks=""
+        # Hard stop / DO NOT REVIEW label at the very beginning
+        if [[ -n "$labels" ]] && [[ "$labels" == *"DO NOT REVIEW"* ]]; then
+          prefix_marks+="${DO_NOT_REVIEW_MARK:-} "
+        fi
+        if [ "${review_decision:-}" = "CHANGES_REQUESTED" ]; then
+          prefix_marks+="${CHANGES_REQUESTED_MARK:-} "
+        fi
+
         # key for lookups
         needle="$repo"$'\t'"$number"
 
-        # When requested, check my latest review state for decoration/notification
-        if [ "${CHECK_MY_APPROVAL:-0}" = "1" ] || [ "${CHECK_MY_REVIEW_DISMISSED:-0}" = "1" ]; then
-          status=$(MY_LOGIN="$my_login" get_my_review_status "$repo" "$number" "$updated" 2>/dev/null)
-          IFS=$'\t' read -r my_state my_ts my_had_appr <<<"$status"
-          if [ "${CHECK_MY_APPROVAL:-0}" = "1" ] && [ "$my_state" = "APPROVED" ]; then
-            label="${APPROVED_BY_ME_MARK:-} $label"
-          fi
-          if [ "${CHECK_MY_REVIEW_DISMISSED:-0}" = "1" ] && [ "$my_state" = "DISMISSED" ]; then
-            label="${APPROVAL_DISMISSED_MARK:-} $label"
-            if [ -n "${DISMISSED_HITS_FILE:-}" ] && [ -n "$my_ts" ]; then
-              # Record repo, number and the dismissal timestamp for dedupe via ledger
-              printf "%s\t%s\t%s\n" "$repo" "$number" "$my_ts" >>"$DISMISSED_HITS_FILE" 2>/dev/null || true
+        # Section label (controls where certain marks are applied)
+        section="${CURRENT_SECTION:-}"
+
+        # Track current merge-queue membership so we can detect when a PR leaves the queue
+        if [ "${in_queue:-false}" = "true" ] && [ -n "${QUEUE_STATE_NEXT:-}" ]; then
+          printf "%s\t%s\n" "$repo" "$number" >>"$QUEUE_STATE_NEXT" 2>/dev/null || true
+        fi
+
+        # Simple, current-run-only review marks (no notification or history state)
+        if [ "$section" = "requested_to_me" ] || [ "$section" = "participated" ] || [ "$section" = "all" ]; then
+          # Derive my latest review state and whether I have ever approved this PR
+          rev_out=$(get_my_review_status "$repo" "$number" "$updated" 2>/dev/null || printf "\t\tfalse\n")
+          IFS=$'\t' read -r my_state my_ts had_approved <<<"$rev_out"
+
+          # Approved by me: my latest review is APPROVED
+          if [ "${my_state:-}" = "APPROVED" ]; then
+            prefix_marks+="${APPROVED_BY_ME_MARK:-} "
+          else
+            # I had approved before but my latest review is not APPROVED anymore
+            if [ "${had_approved:-false}" = "true" ]; then
+              if [ "${my_state:-}" = "DISMISSED" ]; then
+                suffix+="  ${APPROVAL_DISMISSED_MARK:-}"
+              else
+                # Re-requested: I previously approved and now have a different latest state
+                suffix+="  ${REREQUESTED_MARK:-}"
+              fi
             fi
           fi
-        fi
 
-        if [ "${review_decision:-}" = "CHANGES_REQUESTED" ]; then suffix+="  ${CHANGES_REQUESTED_MARK:-}"; fi
-        # unread notifications red dot
-        if [ -s "$UNREAD_FILE" ] && grep -x -F -- "$needle" "$UNREAD_FILE" >/dev/null 2>&1; then
-          suffix+="  ${UNREAD_MARK:-}"
-        fi
-        # marker for PRs that were re-requested in the previous run
-        marked_rereq=0
-        if [ -s "$REREQ_HITS_FILE" ] && grep -x -F -- "$needle" "$REREQ_HITS_FILE" >/dev/null 2>&1; then
-          suffix+="  ${REREQUESTED_MARK:-}"
-          marked_rereq=1
-        fi
+          # Queue-left mark: PR was in the merge queue (previous run) and is now out (regardless of approval state)
+          if [ "${in_queue:-false}" != "true" ] && [ -n "${QUEUE_STATE_FILE:-}" ] && [ -f "$QUEUE_STATE_FILE" ]; then
+            if grep -q -F -x "$needle" "$QUEUE_STATE_FILE" 2>/dev/null; then
+              prefix_marks+="${QUEUE_LEFT_MARK:-} "
+            fi
+          fi
 
-        # If this PR has just been pulled out from the merge queue (prev had true, now not true),
-        # prepend a yellow circle to the label
-        if [ "$in_queue" != "true" ] && [ -n "${PREV_STATE_FILE:-}" ] && [ -s "$PREV_STATE_FILE" ]; then
-          prev_q=$(awk -F'\t' -v r="$repo" -v n="$number" '$1==r && $2==n {print $6; exit}' "$PREV_STATE_FILE" 2>/dev/null)
-          if [ "$prev_q" = "true" ]; then
-            label="${QUEUE_LEFT_MARK:-🟡} $label"
+          # Unread-style mark: PR has any conversation activity (requested_to_me only)
+          if [ "$section" = "requested_to_me" ] && ((conv > 0)); then
+            suffix+="  ${UNREAD_MARK:-}"
           fi
         fi
 
-        # record team-requested PR to index if enabled
+        label="$title"
+        if [ -n "$prefix_marks" ]; then
+          label="${prefix_marks}${label}"
+        fi
+
+        # record team-requested PR to index if enabled (used to avoid duplicates in Raised by teams)
         if [ "${COLLECT_REQUESTED_TO_TEAM:-0}" = "1" ] && [ -n "$REQUESTED_FILE" ]; then
           printf "%s\t%s\n" "$repo" "$number" >>"$REQUESTED_FILE"
         fi
 
-        # record participated PR to index if enabled
-        if [ "${COLLECT_PARTICIPATED:-0}" = "1" ] && [ -n "$PARTICIPATED_FILE" ]; then
-          printf "%s\t%s\n" "$repo" "$number" >>"$PARTICIPATED_FILE"
-        fi
-
-        # record current open PR with metrics for notifications
-        if [ -n "${CURRENT_OPEN_FILE:-}" ]; then
-          requested_flag="0"
-          [ "${COLLECT_REQUESTED_TO_TEAM:-0}" = "1" ] && requested_flag="1"
-          requested_me_flag="0"
-          [ "${COLLECT_REQUESTED_TO_ME:-0}" = "1" ] && requested_me_flag="1"
-          # Sanitize title: replace tabs and newlines with spaces for safe TSV storage
-          # Use original title (not decorated label) for notifications
-          clean_title=$(echo "$title" | tr '\t\n\r' '   ')
-          # Sanitize comment data for TSV storage
-          clean_comment_id=$(echo "$comment_id" | tr '\t\n\r' '   ')
-          clean_comment_author=$(echo "$comment_author" | tr '\t\n\r' '   ')
-          clean_comment_body=$(echo "$comment_body" | tr '\t\n\r' '   ')
-          # Append author login as final column for notification context
-          printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$repo" "$number" "$clean_title" "$url" "$conv" "$in_queue" "$requested_flag" "$clean_comment_id" "$clean_comment_author" "$clean_comment_body" "$requested_me_flag" "$login" >>"$CURRENT_OPEN_FILE"
-        fi
-
         if [[ -n "$b64" ]]; then
-          if [ "${marked_rereq:-0}" -eq 1 ]; then
-            _click_cmd="grep -v -F -- \"$needle\" \"$REREQ_HITS_FILE\" >\"$REREQ_HITS_FILE.tmp\" || true; mv \"$REREQ_HITS_FILE.tmp\" \"$REREQ_HITS_FILE\" || true; open \"$url\""
-            printf "%s\t-- %s%s | bash=/bin/bash param1=-lc param2='%s' terminal=false refresh=true image=%s\n" \
-              "$local_idx" "$label" "$suffix" "$(printf "%s" "$_click_cmd" | sed "s/'/'\\''/g")" "$b64"
-          else
-            printf "%s\t-- %s%s | href=%s image=%s\n" "$local_idx" "$label" "$suffix" "$url" "$b64"
-          fi
+          printf "%s\t-- %s%s | href=%s image=%s\n" "$local_idx" "$label" "$suffix" "$url" "$b64"
         else
-          if [ "${marked_rereq:-0}" -eq 1 ]; then
-            _click_cmd="grep -v -F -- \"$needle\" \"$REREQ_HITS_FILE\" >\"$REREQ_HITS_FILE.tmp\" || true; mv \"$REREQ_HITS_FILE.tmp\" \"$REREQ_HITS_FILE\" || true; open \"$url\""
-            printf "%s\t-- %s%s | bash=/bin/bash param1=-lc param2='%s' terminal=false refresh=true sfimage=person.crop.circle\n" \
-              "$local_idx" "$label" "$suffix" "$(printf "%s" "$_click_cmd" | sed "s/'/'\\''/g")"
-          else
-            printf "%s\t-- %s%s | href=%s sfimage=person.crop.circle\n" "$local_idx" "$label" "$suffix" "$url"
-          fi
+          printf "%s\t-- %s%s | href=%s sfimage=person.crop.circle\n" "$local_idx" "$label" "$suffix" "$url"
         fi
 
       ) >>"$TMP_OUT" &
