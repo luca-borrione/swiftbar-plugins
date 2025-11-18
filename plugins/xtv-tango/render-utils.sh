@@ -168,7 +168,7 @@ render_and_update_pagination() {
             # I had approved before but my latest review is not APPROVED anymore
             if [ "${had_approved:-false}" = "true" ]; then
               if [ "${my_state:-}" = "DISMISSED" ]; then
-                suffix+="  ${APPROVAL_DISMISSED_MARK:-}"
+                prefix_marks+="${APPROVAL_DISMISSED_MARK:-} "
               else
                 # Re-requested: I previously approved and now have a different latest state
                 suffix+="  ${REREQUESTED_MARK:-}"

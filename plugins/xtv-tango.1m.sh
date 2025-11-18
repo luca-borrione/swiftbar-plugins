@@ -2,7 +2,7 @@
 # shellcheck disable=SC2016,SC2034,SC1091
 # SC2034: Many variables appear unused but are used in sourced library files
 # SC1091: Shellcheck can't follow sourced files (they exist, this is informational only)
-set -euo pipefail
+set -Eeuo pipefail
 
 # ============================================================================
 # XTV-TANGO: GitHub Pull Request Menu Bar Plugin for SwiftBar
@@ -28,44 +28,15 @@ set -euo pipefail
 #   default '~/Library/Caches/com.ameba.SwiftBar/Plugins/xtv-tango.1m.sh'
 
 # ----------------------------------------------------------------------------
-# Logging (lightweight, file-based). Enable with XTV_LOG_LEVEL=[DEBUG|INFO|WARN|ERROR]
-# Defaults to INFO. Logs are written under SWIFTBAR_PLUGIN_CACHE_PATH (or /tmp).
-set -E
-: "${XTV_LOG_LEVEL:=INFO}"
-LOG_BASE_DIR="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}"
-mkdir -p "$LOG_BASE_DIR" 2>/dev/null || true
-XTV_LOG_FILE="$LOG_BASE_DIR/xtv-tango.run.log"
-# Simple rotation to last ~2000 lines
-if [ -f "$XTV_LOG_FILE" ]; then
-  LINES=$(wc -l <"$XTV_LOG_FILE" 2>/dev/null || echo 0)
-  if [ "${LINES:-0}" -gt 5000 ]; then
-    tail -n 2000 "$XTV_LOG_FILE" >"${XTV_LOG_FILE}.tmp" 2>/dev/null && mv "${XTV_LOG_FILE}.tmp" "$XTV_LOG_FILE"
-  fi
-fi
-log_level_num() { case "$1" in DEBUG) echo 10 ;; INFO) echo 20 ;; WARN) echo 30 ;; ERROR) echo 40 ;; *) echo 20 ;; esac }
-LOG_LEVEL_NUM=$(log_level_num "$XTV_LOG_LEVEL")
-_log_write() {
-  local lvl="$1"
-  shift
-  local ts
-  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  printf '%s [%s] %s\n' "$ts" "$lvl" "$*" >>"$XTV_LOG_FILE"
-}
-log_debug() { [ "$(log_level_num DEBUG)" -ge "$LOG_LEVEL_NUM" ] && _log_write DEBUG "$@"; }
-log_info() { [ "$(log_level_num INFO)" -ge "$LOG_LEVEL_NUM" ] && _log_write INFO "$@"; }
-log_warn() { [ "$(log_level_num WARN)" -ge "$LOG_LEVEL_NUM" ] && _log_write WARN "$@"; }
-log_error() { [ "$(log_level_num ERROR)" -ge "$LOG_LEVEL_NUM" ] && _log_write ERROR "$@"; }
-export XTV_LOG_FILE XTV_LOG_LEVEL LOG_LEVEL_NUM
-export -f log_debug log_info log_warn log_error log_level_num _log_write
-trap 'log_error "ERR trap exit=$? line=$LINENO cmd=$BASH_COMMAND"' ERR
-log_info "=== xtv-tango run start pid=$$ ==="
-
-# MODULES:
+# MODULES & LOGGING
 # ----------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Notes:
 # => Keep the shellcheck comments to allow jump to definition in the source files
+
+# shellcheck source=plugins/xtv-tango/log-utils.sh
+source "${SCRIPT_DIR}/xtv-tango/log-utils.sh"
 
 # shellcheck source=plugins/xtv-tango/cache-utils.sh
 source "${SCRIPT_DIR}/xtv-tango/cache-utils.sh"
@@ -86,6 +57,10 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 # CONFIG:
 # ---------
 # Export variables used by sourced library files
+
+# Logging configuration (override default ERROR from log-utils.sh if needed)
+export XTV_LOG_LEVEL=INFO
+
 export SORT_PREF="number"                # "activity" or "number"
 export SORT_DIR="desc"                   # "asc" or "desc"
 export REPO_HEADER_COLOR="#0A3069"       # dark blue for repo headers
@@ -155,6 +130,8 @@ NBCUDTC/peacock-clients-dev-dns
 # ============================================================================
 # MAIN CODE
 # ============================================================================
+
+log_info "=== xtv-tango run start pid=$$ ==="
 
 # Global author exclusion used by sections that would otherwise duplicate "Raised by Me"
 AUTHOR_EXCL=""
@@ -260,45 +237,25 @@ if [ "${SHOW_RAISED_BY_ME_SECTION:-0}" = "1" ]; then
   rm -f "$TMP_MYPR_MENU" 2>/dev/null || true
 fi
 
-# 0.b Mentioned (tagged me in comments)
-if [ "${SHOW_MENTIONED_SECTION:-0}" = "1" ]; then
-  TMP_MENTIONED_MENU="$(mktemp)"
+# 0.b Recently Merged (my recently merged PRs)
+if [ "${SHOW_RECENTLY_MERGED_SECTION:-0}" = "1" ] &&
+  [[ -n "${RECENTLY_MERGED_DAYS:-}" ]] &&
+  [[ "${RECENTLY_MERGED_DAYS}" =~ ^[0-9]+$ ]] &&
+  ((RECENTLY_MERGED_DAYS > 0)); then
+  echo "Recently Merged" >>"$TMP_MENU"
+  TMP_MERGED_MENU="$(mktemp)"
 
-  CURRENT_SECTION="mentioned"
-  fetch_mentioned "$TMP_MENTIONED_MENU"
-  SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_MENTIONED_MENU" | awk '{s+=$1} END{print s+0}')
-  [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
-  log_info "section: Mentioned count=${SECTION_COUNT}"
-
-  if [ "$SECTION_COUNT" -gt 0 ]; then
-    echo "Mentioned: ${SECTION_COUNT}" >>"$TMP_MENU"
-  else
-    echo "Mentioned" >>"$TMP_MENU"
-  fi
-  cat "$TMP_MENTIONED_MENU" >>"$TMP_MENU"
-  rm -f "$TMP_MENTIONED_MENU" 2>/dev/null || true
+  # Do not count merged PRs into SEEN_PRS_FILE (menubar count when All is hidden)
+  _PREV_COUNT_SEEN="${COUNT_SEEN:-1}"
+  COUNT_SEEN=0
+  CURRENT_SECTION="recently_merged"
+  fetch_recently_merged "$TMP_MERGED_MENU" "$RECENTLY_MERGED_DAYS"
+  COUNT_SEEN="${_PREV_COUNT_SEEN}"
+  cat "$TMP_MERGED_MENU" >>"$TMP_MENU"
+  rm -f "$TMP_MERGED_MENU" 2>/dev/null || true
 fi
 
-# 0.c Requested to Me (review-requested:@me)
-if [ "${SHOW_REQUESTED_TO_ME_SECTION:-0}" = "1" ]; then
-  TMP_ME_MENU="$(mktemp)"
-
-  CURRENT_SECTION="requested_to_me"
-  fetch_requested_to_me "$TMP_ME_MENU"
-  SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_ME_MENU" | awk '{s+=$1} END{print s+0}')
-  [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
-  log_info "section: RequestedToMe count=${SECTION_COUNT}"
-
-  if [ "$SECTION_COUNT" -gt 0 ]; then
-    echo "Requested to Me: ${SECTION_COUNT}" >>"$TMP_MENU"
-  else
-    echo "Requested to Me" >>"$TMP_MENU"
-  fi
-  cat "$TMP_ME_MENU" >>"$TMP_MENU"
-  rm -f "$TMP_ME_MENU" 2>/dev/null || true
-fi
-
-# 0.d Participated (any involvement on open PRs)
+# 0.c Participated (any involvement on open PRs)
 if [ "${SHOW_PARTICIPATED_SECTION:-0}" = "1" ]; then
   TMP_PART_MENU="$(mktemp)"
 
@@ -318,22 +275,42 @@ if [ "${SHOW_PARTICIPATED_SECTION:-0}" = "1" ]; then
   rm -f "$TMP_PART_MENU" 2>/dev/null || true
 fi
 
-# 0.e Recently Merged (my recently merged PRs)
-if [ "${SHOW_RECENTLY_MERGED_SECTION:-0}" = "1" ] &&
-  [[ -n "${RECENTLY_MERGED_DAYS:-}" ]] &&
-  [[ "${RECENTLY_MERGED_DAYS}" =~ ^[0-9]+$ ]] &&
-  ((RECENTLY_MERGED_DAYS > 0)); then
-  echo "Recently Merged" >>"$TMP_MENU"
-  TMP_MERGED_MENU="$(mktemp)"
+# 0.d Mentioned (tagged me in comments)
+if [ "${SHOW_MENTIONED_SECTION:-0}" = "1" ]; then
+  TMP_MENTIONED_MENU="$(mktemp)"
 
-  # Do not count merged PRs into SEEN_PRS_FILE (menubar count when All is hidden)
-  _PREV_COUNT_SEEN="${COUNT_SEEN:-1}"
-  COUNT_SEEN=0
-  CURRENT_SECTION="recently_merged"
-  fetch_recently_merged "$TMP_MERGED_MENU" "$RECENTLY_MERGED_DAYS"
-  COUNT_SEEN="${_PREV_COUNT_SEEN}"
-  cat "$TMP_MERGED_MENU" >>"$TMP_MENU"
-  rm -f "$TMP_MERGED_MENU" 2>/dev/null || true
+  CURRENT_SECTION="mentioned"
+  fetch_mentioned "$TMP_MENTIONED_MENU"
+  SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_MENTIONED_MENU" | awk '{s+=$1} END{print s+0}')
+  [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
+  log_info "section: Mentioned count=${SECTION_COUNT}"
+
+  if [ "$SECTION_COUNT" -gt 0 ]; then
+    echo "Mentioned: ${SECTION_COUNT}" >>"$TMP_MENU"
+  else
+    echo "Mentioned" >>"$TMP_MENU"
+  fi
+  cat "$TMP_MENTIONED_MENU" >>"$TMP_MENU"
+  rm -f "$TMP_MENTIONED_MENU" 2>/dev/null || true
+fi
+
+# 0.e Requested to Me (review-requested:@me)
+if [ "${SHOW_REQUESTED_TO_ME_SECTION:-0}" = "1" ]; then
+  TMP_ME_MENU="$(mktemp)"
+
+  CURRENT_SECTION="requested_to_me"
+  fetch_requested_to_me "$TMP_ME_MENU"
+  SECTION_COUNT=$(sed -n 's/^-- [^:]*: \([0-9][0-9]*\).*/\1/p' "$TMP_ME_MENU" | awk '{s+=$1} END{print s+0}')
+  [[ "$SECTION_COUNT" =~ ^[0-9]+$ ]] || SECTION_COUNT=0
+  log_info "section: RequestedToMe count=${SECTION_COUNT}"
+
+  if [ "$SECTION_COUNT" -gt 0 ]; then
+    echo "Requested to Me: ${SECTION_COUNT}" >>"$TMP_MENU"
+  else
+    echo "Requested to Me" >>"$TMP_MENU"
+  fi
+  cat "$TMP_ME_MENU" >>"$TMP_MENU"
+  rm -f "$TMP_ME_MENU" 2>/dev/null || true
 fi
 
 # Separator between personal sections and team sections

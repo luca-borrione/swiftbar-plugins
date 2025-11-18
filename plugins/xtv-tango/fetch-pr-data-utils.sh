@@ -90,7 +90,7 @@ get_pr_data_combined() {
 # Return my latest review state (APPROVED/CHANGES_REQUESTED/COMMENTED/DISMISSED), its timestamp, and whether I have ever approved this PR
 get_my_review_status() {
   local repo="$1" number="$2" updatedAt="$3"
-  local cache_dir="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-my-review-v1"
+  local cache_dir="${SWIFTBAR_PLUGIN_CACHE_PATH:-/tmp}/xtv-my-review-v2"
   mkdir -p "$cache_dir"
   local key="${repo//\//_}-${number}.txt"
   local file="$cache_dir/$key"
@@ -116,7 +116,7 @@ get_my_review_status() {
     (reduce (reverse)[] as $r (null; if .==null and low(($r.user.login // "")) == low($me) then $r else . end)) as $latest |
     ($latest.state // "") as $state |
     (($latest.submitted_at // $latest.submittedAt // "")) as $ts |
-    ([ $arr[] | select(low((.user.login // "")) == low($me) and .state == "APPROVED") ] | length > 0) as $had |
+    ([ $arr[] | select(low((.user.login // "")) == low($me) and (.state == "APPROVED" or .state == "DISMISSED")) ] | length > 0) as $had |
     "\($state)\t\($ts)\t\($had)"
   ' 2>/dev/null || printf "\t\tfalse\n")
 
