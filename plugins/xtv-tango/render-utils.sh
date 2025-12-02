@@ -245,11 +245,13 @@ render_and_update_pagination() {
           if [[ "$orig_count" =~ ^[0-9]+$ ]] && [ "$corrected_count" -ne "$orig_count" ]; then
             echo "-- $repo_name: $corrected_count out of $orig_count |$rest"
             if [ "${ACCUMULATE_ALL_TOTAL:-0}" = "1" ]; then
-              ALL_TOTAL=$((ALL_TOTAL + orig_count))
+              # For the menubar total, always use the deduped count actually shown
+              ALL_TOTAL=$((ALL_TOTAL + corrected_count))
             fi
           else
             echo "-- $repo_name: $corrected_count |$rest"
             if [ "${ACCUMULATE_ALL_TOTAL:-0}" = "1" ]; then
+              # For the menubar total, always use the deduped count actually shown
               ALL_TOTAL=$((ALL_TOTAL + corrected_count))
             fi
           fi

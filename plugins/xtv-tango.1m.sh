@@ -489,13 +489,11 @@ if [ "${SHOW_ALL_SECTION:-1}" = "1" ]; then
 fi
 
 # Bar Title for when logged in: just an icon and the total PR count
-if [ "${SHOW_ALL_SECTION:-1}" = "1" ]; then
-  echo "🔀 ${ALL_TOTAL:-0}"
-else
-  SEEN_COUNT=$(wc -l <"$SEEN_PRS_FILE" 2>/dev/null | tr -d '[:space:]')
-  [[ "$SEEN_COUNT" =~ ^[0-9]+$ ]] || SEEN_COUNT=0
-  echo "🔀 ${SEEN_COUNT}"
-fi
+# Use SEEN_PRS_FILE which tracks every open PR shown across all sections (deduped)
+SEEN_COUNT=$(wc -l <"$SEEN_PRS_FILE" 2>/dev/null | tr -d '[:space:]')
+[[ "$SEEN_COUNT" =~ ^[0-9]+$ ]] || SEEN_COUNT=0
+log_info "bar_total: ${SEEN_COUNT}"
+echo "🔀 ${SEEN_COUNT}"
 echo "---"
 cat "$TMP_MENU"
 
